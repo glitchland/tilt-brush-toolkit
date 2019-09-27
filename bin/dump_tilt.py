@@ -17,6 +17,7 @@
 """This is sample Python 2.7 code that uses the tiltbrush.tilt module
 to view raw Tilt Brush data."""
 
+import json
 import os
 import pprint
 import sys
@@ -29,6 +30,14 @@ except ImportError:
   print >>sys.stderr, "Please put the 'Python' directory in your PYTHONPATH"
   sys.exit(1)
   
+def dump_json(sketch):
+  """Converts the tilt sketch information to unity parsable JSON"""
+  sketchMap = {"sketch":[]}
+
+  for (i, stroke) in enumerate(sketch.strokes):
+    sketchMap["sketch"].append(stroke_to_map(stroke))
+
+  return json.dumps(sketchMap, indent=4, sort_keys=True)
 
 def dump_sketch(sketch):
   """Prints out some rough information about the strokes.
@@ -50,6 +59,20 @@ def dump_sketch(sketch):
     print "%3d: " % i,
     dump_stroke(stroke)
 
+def stroke_to_map(stroke):
+  strokeMap = {}
+  strokeMap["brush"] = stroke.brush_idx # XXX map this to a guid
+  strokeMap["brush_size"] = stroke.brush_size # XXX multiply this by scale?
+  strokeMap["brush_color"] = [ int(stroke.brush_color[0] * 255), int(stroke.brush_color[1] * 255), int(stroke.brush_color[2] * 255)]
+  strokeMap["control_points"] = []
+
+  for ctrlPt in stroke.controlpoints:
+    ctrlPtMap = {}
+    ctrlPtMap["position"] = [ctrlPt.position[0], ctrlPt.position[1], ctrlPt.position[2]]
+    ctrlPtMap["rotation"] = [ctrlPt.orientation[0], ctrlPt.orientation[1], ctrlPt.orientation[2], ctrlPt.orientation[3]]
+    strokeMap["control_points"].append(ctrlPtMap)
+
+  return strokeMap
 
 def dump_stroke(stroke):
   """Prints out some information about the stroke."""
@@ -74,17 +97,23 @@ def dump_stroke(stroke):
     start_ts,
     len(stroke.controlpoints))
 
+  print "\nStroke Control Points: \n---------------------"
+  for ctrlPt in stroke.controlpoints:
+    print "Position.....: [x: %f, y: %f, z: %f]" % (ctrlPt.position[0], ctrlPt.position[1], ctrlPt.position[2]) 
+    print "Rotation (q).: ", ctrlPt.orientation
+  print "--------------------- \n"
 
 def main():
   import argparse
   parser = argparse.ArgumentParser(description="View information about a .tilt")
   parser.add_argument('--strokes', action='store_true', help="Dump the sketch strokes")
   parser.add_argument('--metadata', action='store_true', help="Dump the metadata")
+  parser.add_argument('--json', action='store_true', help="Dump JSON for unity parsing")
   parser.add_argument('files', type=str, nargs='+', help="Files to examine")
 
   args = parser.parse_args()
-  if not (args.strokes or args.metadata):
-    print "You should pass at least one of --strokes or --metadata"
+  if not (args.strokes or args.metadata or args.json):
+    print "You should pass at least one of --strokes , --metadata, or --json"
 
   for filename in args.files:
     t = Tilt(filename)
@@ -92,6 +121,8 @@ def main():
       dump_sketch(t.sketch)
     if args.metadata:
       pprint.pprint(t.metadata)
+    if args.json:
+      print(dump_json(t.sketch))
 
 if __name__ == '__main__':
   main()
