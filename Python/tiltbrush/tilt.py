@@ -59,7 +59,7 @@ class memoized_property(object):
   def __get__(self, instance, owner):
     if instance is None:
       return None
-    value = self.fget(instance)
+    value = self.fget(instance) #XXX
     # Since this isn't a data descriptor (no __set__ method),
     # instance attributes take precedence over the descriptor.
     setattr(instance, self.name, value)
@@ -176,16 +176,28 @@ class Tilt(object):
           except BadTilt:
             pass
 
-  def __init__(self, filename):
+  def __init__(self, filename, from_json=False):
+    self.from_json = from_json
     self.filename = filename
     self._sketch = None          # lazily-loaded
-    with self.subfile_reader('metadata.json') as inf:
-      self.metadata = json.load(inf)
-      try:
-        validate_metadata(self.metadata)
-      except BadMetadata as e:
-        print 'WARNING: %s' % e
+    if from_json:
+      with open('metadata.json', 'r') as metadata_json_file:
+        mjd = metadata_json_file.read() 
+        self.metadata = json.loads(mjd) # XXX: Clean this up
+        self._sketch = Sketch(filename, from_json) # self, source, from_json
+    else: 
+      with self.subfile_reader('metadata.json') as inf:
+        self.metadata = json.load(inf)
+        try:
+          validate_metadata(self.metadata)
+        except BadMetadata as e:
+          print 'WARNING: %s' % e
 
+  def pack_sketch(self):
+    tmpf = StringIO()
+    packed_data = self._sketch.binwrite(binfile(tmpf))
+    return tmpf.getvalue()
+  
   def write_sketch(self):
     if False:
       # Recreate BrushIndex. Not tested and not strictly necessary, so not enabled
@@ -249,9 +261,12 @@ class Tilt(object):
 
   @memoized_property
   def sketch(self):
+    if self.from_json:
+      return None  
+
     # Would be slightly more consistent semantics to do the data read
     # in __init__, and parse it here; but this is probably good enough.
-    return Sketch(self)
+    return Sketch(self, self.from_json)
 
 
 def _make_ext_reader(ext_bits, ext_mask):
@@ -317,9 +332,14 @@ class Sketch(object):
     .strokes    List of tilt.Stroke instances
     .filename   Filename if loaded from file, but usually None
     .header     Opaque header data"""
-  def __init__(self, source):
+  def __init__(self, source, from_json=False):
     """source is either a file name, a file-like instance, or a Tilt instance."""
-    if isinstance(source, Tilt):
+    if from_json:
+      self.filename = None
+      with open(source, 'r') as sketch_json_file:
+        json_data = sketch_json_file.read()
+        self._parse_json(json_data)
+    elif isinstance(source, Tilt):
       with source.subfile_reader('data.sketch') as inf:
         self.filename = None
         self._parse(binfile(inf))
@@ -331,10 +351,10 @@ class Sketch(object):
       with file(source, 'rb') as inf:
         self._parse(binfile(inf))
 
-  def write(self, destination):
+  def write(self):
     """destination is either a file name, a file-like instance, or a Tilt instance."""
     tmpf = StringIO()
-    self._write(binfile(tmpf))
+    self.binwrite(binfile(tmpf))
     data = tmpf.getvalue()
 
     if isinstance(destination, Tilt):
@@ -346,6 +366,20 @@ class Sketch(object):
       with file(destination, 'wb') as outf:
         outf.write(data)
 
+  def _parse_json(self, json_data):
+    sketch_map = json.loads(json_data)
+    self.header = [int(sketch_map["cookie"]),int(sketch_map["version"]), int(sketch_map["unused"])]
+    self.additional_header = sketch_map["additional_header"]
+    num_strokes = len(sketch_map["strokes"])
+    assert 0 <= num_strokes < 300000, num_strokes  
+
+    strokes = [] 
+    for i in xrange(num_strokes):
+      s = Stroke(sketch_map["strokes"][i])
+      strokes.append(s)
+
+    self.strokes = strokes
+
   def _parse(self, b):
     # b is a binfile instance
     # mutates self
@@ -355,14 +389,13 @@ class Sketch(object):
     assert 0 <= num_strokes < 300000, num_strokes
     self.strokes = [Stroke.from_file(b) for i in xrange(num_strokes)]
 
-  def _write(self, b):
+  def binwrite(self, b):
     # b is a binfile instance.
     b.pack("<3I", *self.header)
     b.write_length_prefixed(self.additional_header)
     b.pack("<i", len(self.strokes))
     for stroke in self.strokes:
-      stroke._write(b)
-
+      stroke._write(b) # _write on the stroke object
 
 class Stroke(object):
   """Data for a single stroke from a .tilt file. Attributes:
@@ -389,6 +422,11 @@ class Stroke(object):
   #
   #   Because of this homogeneity, the lookup table is stored in
   #   stroke.cp_ext_lookup, not in the control point.
+
+  def __init__(self, json_map_data=None):
+    if json_map_data:
+      self.initialized_from_json = True
+      self._parse_json_map(json_map_data)
 
   @classmethod
   def from_file(cls, b):
@@ -452,6 +490,37 @@ class Stroke(object):
     # Read the raw data up front, but parse it lazily
     bytes_per_cp = 4 * (3 + 4 + len(self.cp_ext_lookup))
     self._controlpoints = (cp_ext_reader, num_cp, b.inf.read(num_cp * bytes_per_cp))
+
+  def _parse_json_map(self, json_map):
+    # parse this
+    self.brush_idx = json_map["brush_index"]
+    self.brush_color = json_map["brush_color"]
+    self.brush_size = json_map["brush_size"]
+    self.stroke_mask = json_map["stroke_mask"]
+    self.cp_mask =json_map["cp_mask"]
+    #
+    #
+    unused_stroke_ext_reader, self.stroke_ext_writer, self.stroke_ext_lookup = _make_stroke_ext_reader(self.stroke_mask)
+
+    self.extension = json_map["stroke_extension"] #stroke_ext_reader(b) #XXX: b?
+
+    unused_cp_ext_reader, self.cp_ext_writer, self.cp_ext_lookup = _make_cp_ext_reader(self.cp_mask)
+
+    control_pts_bin_str = ""
+    for cpd in json_map["control_points"]:
+      control_pts_bin_str += struct.pack('<3f', cpd["position"][0], cpd["position"][1], cpd["position"][2])
+      control_pts_bin_str += struct.pack('<4f', cpd["rotation"][0], cpd["rotation"][1], cpd["rotation"][2], cpd["rotation"][3])
+      control_pts_bin_str += struct.pack('<1f', cpd["extension"][0])
+      control_pts_bin_str += struct.pack('<1i', cpd["extension"][1])
+
+    num_cp = len(json_map["control_points"])
+    assert num_cp < 10000, num_cp
+
+    self._controlpoints = (unused_cp_ext_reader, num_cp, control_pts_bin_str)
+    # (cp_ext_reader, num_cp, b.inf.read(num_cp * bytes_per_cp))
+    # pack the control point data into a binary string
+    # self._controlpoints = (unused_cp_ext_reader, len(json_map["control_points"]))
+    # json_map["control_points"] # (cp_ext_reader, num_cp, b.inf.read(num_cp * bytes_per_cp))
 
   @memoized_property
   def controlpoints(self):
@@ -539,10 +608,15 @@ class Stroke(object):
     b.pack("<4f", *self.brush_color)
     b.pack("<fII", self.brush_size, self.stroke_mask, self.cp_mask)
     self.stroke_ext_writer(b, self.extension)
+    #if self.initialized_from_json:
+    #  print "CONTROL POINTS: %d" % len(self._controlpoints)
+    #  b.pack("<i", len(self.controlpoints))
+    #  for cp in self.controlpoints:
+    #    cp._write(b, self.cp_ext_writer)
+    #else:
     b.pack("<i", len(self.controlpoints))
     for cp in self.controlpoints:
       cp._write(b, self.cp_ext_writer)
-
 
 class ControlPoint(object):
   """Data for a single control point from a stroke. Attributes:

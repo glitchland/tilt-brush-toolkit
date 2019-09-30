@@ -31,13 +31,21 @@ except ImportError:
   sys.exit(1)
   
 def dump_json(sketch):
-  """Converts the tilt sketch information to unity parsable JSON"""
-  sketchMap = {"sketch":[]}
+  """Converts the tilt sketch information to unity parsable JSON.
+  This is essentially a list of stroke data."""
+  sketch_map = {"strokes":[]}
+
+  cookie, version, unused = sketch.header[0:3]
+  sketch_map["cookie"] = cookie
+  sketch_map["version"] = version
+  sketch_map["unused"] = unused
+  sketch_map["additional_header_length"] = len(sketch.additional_header)
+  sketch_map["additional_header"] = sketch.additional_header
 
   for (i, stroke) in enumerate(sketch.strokes):
-    sketchMap["sketch"].append(stroke_to_map(stroke))
+    sketch_map["strokes"].append(stroke_to_map(stroke))
 
-  return json.dumps(sketchMap, indent=4, sort_keys=True)
+  return json.dumps(sketch_map, indent=4, sort_keys=True)
 
 def dump_sketch(sketch):
   """Prints out some rough information about the strokes.
@@ -60,19 +68,23 @@ def dump_sketch(sketch):
     dump_stroke(stroke)
 
 def stroke_to_map(stroke):
-  strokeMap = {}
-  strokeMap["brush"] = stroke.brush_idx # XXX map this to a guid
-  strokeMap["brush_size"] = stroke.brush_size # XXX multiply this by scale?
-  strokeMap["brush_color"] = [ int(stroke.brush_color[0] * 255), int(stroke.brush_color[1] * 255), int(stroke.brush_color[2] * 255)]
-  strokeMap["control_points"] = []
+  stroke_map = {}
+  stroke_map["brush_index"] = stroke.brush_idx # XXX map this to a guid
+  stroke_map["brush_color"] = [ stroke.brush_color[0], stroke.brush_color[1], stroke.brush_color[2], stroke.brush_color[3] ] #XXX (parse on unity side[ int(stroke.brush_color[0] * 255), int(stroke.brush_color[1] * 255), int(stroke.brush_color[2] * 255), int(stroke.brush_color[3] * 255)]
+  stroke_map["brush_size"] = stroke.brush_size # XXX multiply this by scale?  
+  stroke_map["stroke_extension"] = stroke.extension
+  stroke_map["stroke_mask"] = stroke.stroke_mask
+  stroke_map["cp_mask"] = stroke.cp_mask
+  stroke_map["control_points"] = []
 
-  for ctrlPt in stroke.controlpoints:
-    ctrlPtMap = {}
-    ctrlPtMap["position"] = [ctrlPt.position[0], ctrlPt.position[1], ctrlPt.position[2]]
-    ctrlPtMap["rotation"] = [ctrlPt.orientation[0], ctrlPt.orientation[1], ctrlPt.orientation[2], ctrlPt.orientation[3]]
-    strokeMap["control_points"].append(ctrlPtMap)
+  for ctrl_point in stroke.controlpoints:
+    ctrl_point_map = {}
+    ctrl_point_map["position"] = [ctrl_point.position[0], ctrl_point.position[1], ctrl_point.position[2]]
+    ctrl_point_map["rotation"] = [ctrl_point.orientation[0], ctrl_point.orientation[1], ctrl_point.orientation[2], ctrl_point.orientation[3]]
+    ctrl_point_map["extension"] = ctrl_point.extension
+    stroke_map["control_points"].append(ctrl_point_map)
 
-  return strokeMap
+  return stroke_map
 
 def dump_stroke(stroke):
   """Prints out some information about the stroke."""
@@ -101,6 +113,7 @@ def dump_stroke(stroke):
   for ctrlPt in stroke.controlpoints:
     print "Position.....: [x: %f, y: %f, z: %f]" % (ctrlPt.position[0], ctrlPt.position[1], ctrlPt.position[2]) 
     print "Rotation (q).: ", ctrlPt.orientation
+    print "Extension....: %s" % ctrlPt.extension
   print "--------------------- \n"
 
 def main():
