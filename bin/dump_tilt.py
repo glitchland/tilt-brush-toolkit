@@ -50,6 +50,8 @@ def dump_json(sketch):
 def dump_sketch(sketch):
   """Prints out some rough information about the strokes.
   Pass a tiltbrush.tilt.Sketch instance."""
+  pp = pprint.PrettyPrinter(indent=4)
+  pp.pprint(sketch)
   cooky, version, unused = sketch.header[0:3]
   print 'Cooky:0x%08x  Version:%s  Unused:%s  Extra:(%d bytes)' % (
     cooky, version, unused, len(sketch.additional_header))
@@ -90,6 +92,8 @@ def stroke_to_map(stroke):
 
 def dump_stroke(stroke):
   """Prints out some information about the stroke."""
+  print "Stroke Ext: %s" % stroke.stroke_ext_lookup
+
   if len(stroke.controlpoints) and 'timestamp' in stroke.cp_ext_lookup:
     cp = stroke.controlpoints[0]
     timestamp = stroke.cp_ext_lookup['timestamp']
