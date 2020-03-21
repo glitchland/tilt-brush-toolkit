@@ -63,6 +63,13 @@ public sealed class Gltf1Root : GltfRootBase {
     }
   }
 
+  public override IEnumerable<GltfMeshBase> Meshes {
+    get {
+      if (meshes == null) { return new GltfMeshBase[0]; }
+      return meshes.Values.Cast<GltfMeshBase>();
+    }
+  }
+
   // Disposable pattern, with Dispose(void) and Dispose(bool), as recommended by:
   // https://docs.microsoft.com/en-us/dotnet/api/system.idisposable
   protected override void Dispose(bool disposing) {
@@ -79,7 +86,7 @@ public sealed class Gltf1Root : GltfRootBase {
   }
 
   /// Map glTFid values (ie, string names) names to the objects they refer to
-  public override void Dereference(IUriLoader uriLoader = null, PolyFormat gltfFormat = null) {
+  public override void Dereference(bool isGlb, IUriLoader uriLoader = null) {
     // "dereference" all the names
     scenePtr = scenes[scene];
     foreach (var pair in buffers) {
@@ -95,17 +102,8 @@ public sealed class Gltf1Root : GltfRootBase {
           Debug.Assert(buffer.uri != null);
         }
         buffer.data = uriLoader.Load(buffer.uri);
-      } else if (gltfFormat != null) {
-          // Runtime import case; the uris refer to resource files in the PolyFormat.
-          Debug.Assert(buffer.type == "arraybuffer");
-          foreach (PolyFile resource in gltfFormat.resources) {
-            if (resource.relativePath == buffer.uri) {
-              buffer.data = new Reader(resource.contents);
-              break;
-            }
-          }
-        }
       }
+    }
     foreach (var pair in accessors) {
       pair.Value.gltfId = pair.Key;
       pair.Value.bufferViewPtr = bufferViews[pair.Value.bufferView];

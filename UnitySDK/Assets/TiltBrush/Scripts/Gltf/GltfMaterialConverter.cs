@@ -15,6 +15,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Text.RegularExpressions;
 
 using UnityEngine;
@@ -24,11 +25,14 @@ namespace TiltBrushToolkit {
 public class GltfMaterialConverter {
   private static readonly Regex kTiltBrushMaterialRegex = new Regex(
       @".*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$");
+  // Matches
+  //    http://...<guid>/shadername.glsl
+  //    <some local file>/.../<guid>-<version>.glsl
   private static readonly Regex kTiltBrushShaderRegex = new Regex(
-      @".*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/");
+      @".*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[/-]");
 
   /// <summary>
-  /// Information about a Unity material generated from a Gltf node.
+  /// Information about a Unity material corresponding to a Gltf node.
   /// </summary>
   public struct UnityMaterial {
     /// <summary>
@@ -45,12 +49,13 @@ public class GltfMaterialConverter {
   /// <summary>
   /// List of NEW Unity materials we have created.
   /// </summary>
-  private List<Material> newMaterials = new List<Material>();
+  private List<Material> m_newMaterials = new List<Material>();
 
   /// <summary>
-  /// Cache of Unity materials we have already created for each GltfMaterialBase.
+  /// For memoizing GetMaterial()
   /// </summary>
-  private Dictionary<GltfMaterialBase, UnityMaterial> materials = new Dictionary<GltfMaterialBase, UnityMaterial>();
+  private Dictionary<GltfMaterialBase, UnityMaterial> m_getMaterialMemo =
+      new Dictionary<GltfMaterialBase, UnityMaterial>();
 
   private static bool IsTiltBrushHostedUri(string uri) {
     // Will always look like "https://www.tiltbrush.com/shaders/..."
@@ -107,42 +112,30 @@ public class GltfMaterialConverter {
   }
 
   /// <summary>
-  /// Gets (or creates) the Unity material corresponding to the given GLTF 2 material.
+  /// Gets (or creates) the Unity material corresponding to the given glTF material.
   /// </summary>
-  /// <param name="gltfMaterial">The GLTF material.</param>
+  /// <param name="gltfMaterial">The glTF material.</param>
   /// <returns>The Unity material that correpsonds to the given GLTF2 material.</returns>
   public UnityMaterial? GetMaterial(GltfMaterialBase gltfMaterial) {
-    // Have we already converted this material?
-    {
-      UnityMaterial result;
-      if (materials.TryGetValue(gltfMaterial, out result)) {
-        return result;
-      }
+    if (m_getMaterialMemo.TryGetValue(gltfMaterial, out UnityMaterial memo)) {
+      return memo;
     }
 
-    // Try to look up a global material first.
-    Material global;
-    if (null != (global = LookUpGlobalMaterial(gltfMaterial))) {
-      // Found it.
-      var result = new UnityMaterial { material = global, template = global };
-      materials[gltfMaterial] = result;
-      return result;
+    if (LookUpGlobalMaterial(gltfMaterial) is UnityMaterial global) {
+      Debug.Assert(global.material == global.template);
+      m_getMaterialMemo[gltfMaterial] = global;
+      return global;
     }
 
-    // Ok, we will have to create a new material.
-    UnityMaterial? created = ConvertGltfMaterial(gltfMaterial);
-    if (created == null) {
-      Debug.LogErrorFormat("Failed to look up material {0}", gltfMaterial.name);
-    } else {
-      var result = created.Value;
-      materials[gltfMaterial] = result;
-      Debug.Assert(result.material != result.template);
-      if (result.material != result.template) {
-        newMaterials.Add(result.material);
-      }
+    if (ConvertGltfMaterial(gltfMaterial) is UnityMaterial created) {
+      Debug.Assert(created.material != created.template);
+      m_newMaterials.Add(created.material);
+      m_getMaterialMemo[gltfMaterial] = created;
+      return created;
     }
 
-    return created;
+    Debug.LogErrorFormat("Failed to convert material {0}", gltfMaterial.name);
+    return null;
   }
 
   /// <summary>
@@ -150,7 +143,7 @@ public class GltfMaterialConverter {
   /// conversion process.
   /// </summary>
   public List<Material> GetGeneratedMaterials() {
-    return new List<Material>(newMaterials);
+    return new List<Material>(m_newMaterials);
   }
 
   /// <returns>true if there is a global material corresponding to the given glTF material,
@@ -162,39 +155,24 @@ public class GltfMaterialConverter {
 
   /// <summary>
   /// Looks up a built-in global material that corresponds to the given GLTF material.
-  /// This will NOT create new materials, it will only look up global ones.
+  /// This will NOT create new materials; it will only look up global ones.
   /// </summary>
   /// <param name="gltfMaterial">The material to look up.</param>
   /// <param name="materialGuid">The guid parsed from the material name, or Guid.None</param>
   /// <returns>The global material that corresponds to the given GLTF material,
   /// if found. If not found, null.</returns>
-  private static Material LookUpGlobalMaterial(GltfMaterialBase gltfMaterial) {
-    // Is this a Blocks gvrss material?
-#if false
-    if (gltfMaterial.TechniqueExtras != null) {
-      string surfaceShader = null;
-      gltfMaterial.TechniqueExtras.TryGetValue("gvrss", out surfaceShader);
-
-      if (surfaceShader != null) {
-        // Blocks material. Look up the mapping in PtSettings.
-        Material material = PtSettings.Instance.LookupSurfaceShaderMaterial(surfaceShader);
-        if (material != null) {
-          return material;
-        } else {
-          Debug.LogWarningFormat("Unknown gvrss surface shader {0}", surfaceShader);
-        }
-      }
-    }
-#endif
-
+  private static UnityMaterial? LookUpGlobalMaterial(GltfMaterialBase gltfMaterial) {
     // Check if it's a Tilt Brush material.
     Guid guid = ParseGuidFromMaterial(gltfMaterial);
     if (guid != Guid.Empty) {
       // Tilt Brush global material. PBR materials will use unrecognized guids;
       // these will be handled by the caller.
       BrushDescriptor desc;
-      if (TiltBrushToolkit.TbtSettings.BrushManifest.BrushesByGuid.TryGetValue(guid, out desc)) {
-        return desc.Material;
+      if (TbtSettings.Instance.TryGetBrush(guid, out desc)) {
+        return new UnityMaterial {
+            material = desc.Material,
+            template = desc.Material
+        };
       }
     }
     return null;
@@ -219,11 +197,13 @@ public class GltfMaterialConverter {
   /// <param name="gltfMat">The glTF1 material to convert.</param>
   /// <returns>The result of the conversion, or null on failure.</returns>
   private UnityMaterial? ConvertGltf1Material(Gltf1Material gltfMat) {
+    // We know this guid doesn't map to a brush; if it did, LookupGlobalMaterial would
+    // have succeeded and we wouldn't be trying to create an new material.
     Guid instanceGuid = ParseGuidFromMaterial(gltfMat);
     Guid templateGuid = ParseGuidFromShader(gltfMat);
 
     BrushDescriptor desc;
-    if (!TiltBrushToolkit.TbtSettings.BrushManifest.BrushesByGuid.TryGetValue(templateGuid, out desc)) {
+    if (!TbtSettings.Instance.TryGetBrush(templateGuid, out desc)) {
       // If they are the same, there is no template/instance relationship.
       if (instanceGuid != templateGuid) {
         Debug.LogErrorFormat("Unexpected: cannot find template material {0} for {1}",
@@ -254,7 +234,10 @@ public class GltfMaterialConverter {
       }
       // Tilt Brush doesn't support metallicRoughnessTexture (yet?)
     }
-    return CreateNewPbrMaterial(desc.Material, pbr);
+    var pbrInfo = new TbtSettings.PbrMaterialInfo {
+        material = desc.Material
+    };
+    return CreateNewPbrMaterial(pbrInfo, gltfMat.name, pbr);
   }
 
   /// <summary>
@@ -266,60 +249,80 @@ public class GltfMaterialConverter {
   /// <param name="gltfMat">The GLTF 2 material to convert.</param>
   /// <returns>The result of the conversion</returns>
   private UnityMaterial? ConvertGltf2Material(Gltf2Material gltfMat) {
-    Material baseMaterial; {
-      string alphaMode = gltfMat.alphaMode == null ? null : gltfMat.alphaMode.ToUpperInvariant();
+    TbtSettings.PbrMaterialInfo pbrInfo;
 
-      if (!gltfMat.doubleSided) {
-        Debug.LogWarning("Not yet supported: single-sided pbr materials");
-      }
-
-      switch (alphaMode) {
-      case Gltf2Material.kAlphaModeMask:
-        Debug.LogWarning("Not yet supported: alphaMode=MASK");
-        baseMaterial = TbtSettings.Instance.m_BasePbrOpaqueDoubleSidedMaterial;
-        break;
-      default:
+    string alphaMode = gltfMat.alphaMode == null ? null : gltfMat.alphaMode.ToUpperInvariant();
+    switch (alphaMode) {
+      case null:
+      case "":
       case Gltf2Material.kAlphaModeOpaque:
-        baseMaterial = TbtSettings.Instance.m_BasePbrOpaqueDoubleSidedMaterial;
+        pbrInfo = gltfMat.doubleSided
+            ? TbtSettings.Instance.m_PbrOpaqueDoubleSided
+            : TbtSettings.Instance.m_PbrOpaqueSingleSided;
         break;
       case Gltf2Material.kAlphaModeBlend:
-        baseMaterial = TbtSettings.Instance.m_BasePbrBlendDoubleSidedMaterial;
+        pbrInfo = gltfMat.doubleSided
+            ? TbtSettings.Instance.m_PbrBlendDoubleSided
+            : TbtSettings.Instance.m_PbrBlendSingleSided;
         break;
-      }
+      default:
+        Debug.LogWarning($"Not yet supported: alphaMode={alphaMode}");
+        goto case Gltf2Material.kAlphaModeOpaque;
     }
 
     if (gltfMat.pbrMetallicRoughness == null) {
-      Debug.LogWarningFormat("Material #{0} has no PBR info.", gltfMat.gltfIndex);
-      return null;
+      var specGloss = gltfMat.extensions?.KHR_materials_pbrSpecularGlossiness;
+      if (specGloss != null) {
+        // Try and make the best of pbrSpecularGlossiness.
+        // Maybe it would be better to support "extensionsRequired" and raise an error
+        // if the asset requires pbrSpecularGlossiness.
+        gltfMat.pbrMetallicRoughness = new Gltf2Material.PbrMetallicRoughness {
+            baseColorFactor = specGloss.diffuseFactor,
+            baseColorTexture = specGloss.diffuseTexture,
+            roughnessFactor = 1f - specGloss.glossinessFactor
+        };
+      } else {
+        Debug.LogWarningFormat("Material #{0} has no PBR info.", gltfMat.gltfIndex);
+        return null;
+      }
     }
 
-    return CreateNewPbrMaterial(baseMaterial, gltfMat.pbrMetallicRoughness);
+    return CreateNewPbrMaterial(pbrInfo, gltfMat.name, gltfMat.pbrMetallicRoughness);
   }
 
   // Helper for ConvertGltf{1,2}Material
   private UnityMaterial CreateNewPbrMaterial(
-      Material baseMaterial, Gltf2Material.PbrMetallicRoughness pbr) {
-    Material mat = UnityEngine.Object.Instantiate(baseMaterial);
+      TbtSettings.PbrMaterialInfo pbrInfo, string gltfMatName,
+      Gltf2Material.PbrMetallicRoughness pbr) {
+    Material mat = UnityEngine.Object.Instantiate(pbrInfo.material);
 
-    string matName = baseMaterial.name;
-    if (matName.StartsWith("Base")) {
-      matName = matName.Substring(4);
-    }
-
-    mat.SetColor("_BaseColorFactor", pbr.baseColorFactor);
     Texture tex = null;
     if (pbr.baseColorTexture != null) {
       tex = pbr.baseColorTexture.texture.unityTexture;
       mat.SetTexture("_BaseColorTex", tex);
     }
-    if (tex != null) {
-      matName = string.Format("{0}_{1}", matName, tex.name);
+
+    if (gltfMatName != null) {
+      // The gltf has a name it wants us to use
+      mat.name = gltfMatName;
+    } else {
+      // No name in the gltf; make up something reasonable
+      string matName = pbrInfo.material.name;
+      if (matName.StartsWith("Base")) { matName = matName.Substring(4); }
+      if (tex != null) {
+        matName = string.Format("{0}_{1}", matName, tex.name);
+      }
+      mat.name = matName;
     }
+
+    mat.SetColor("_BaseColorFactor", pbr.baseColorFactor);
     mat.SetFloat("_MetallicFactor", pbr.metallicFactor);
     mat.SetFloat("_RoughnessFactor", pbr.roughnessFactor);
-    mat.name = matName;
 
-    return new UnityMaterial { material = mat, template = baseMaterial };
+    return new UnityMaterial {
+        material = mat,
+        template = pbrInfo.material
+    };
   }
 
   private static string SanitizeName(string uri) {
@@ -367,9 +370,14 @@ public class GltfMaterialConverter {
 #endif
       if (tex == null) {
         byte[] textureBytes;
-        using (IBufferReader r = loader.Load(gltfTexture.SourcePtr.uri)) {
-          textureBytes = new byte[r.GetContentLength()];
-          r.Read(textureBytes, destinationOffset: 0, readStart: 0, readSize: textureBytes.Length);
+        try {
+          using (IBufferReader r = loader.Load(gltfTexture.SourcePtr.uri)) {
+            textureBytes = new byte[r.GetContentLength()];
+            r.Read(textureBytes, destinationOffset: 0, readStart: 0, readSize: textureBytes.Length);
+          }
+        } catch (IOException e) {
+          Debug.LogWarning($"Cannot read uri {gltfTexture.SourcePtr.uri}: {e}");
+          yield break;
         }
         tex = new Texture2D(1,1);
         tex.LoadImage(textureBytes, markNonReadable: false);
@@ -386,6 +394,10 @@ public class GltfMaterialConverter {
   // It may also refer to a dynamically-generated material, in which case the base material
   // can be found by using ParseGuidFromShader.
   private static Guid ParseGuidFromMaterial(GltfMaterialBase gltfMaterial) {
+    if (Guid.TryParse((gltfMaterial as Gltf2Material)?.extensions?.GOOGLE_tilt_brush_material?.guid,
+                      out Guid guid)) {
+      return guid;
+    }
     // Tilt Brush names its gltf materials like:
     //   material_Light-2241cd32-8ba2-48a5-9ee7-2caef7e9ed62
 
@@ -420,24 +432,25 @@ public class GltfMaterialConverter {
   /// Returns a BrushDescriptor given a gltf material, or null if not found.
   /// If the material is an instance of a template, the descriptor for that
   /// will be returned.
+  /// Note that gltf2 has pbr support, and Tilt Brush uses that instead of
+  /// template "brushes".
   public static BrushDescriptor LookupBrushDescriptor(GltfMaterialBase gltfMaterial) {
     Guid guid = ParseGuidFromMaterial(gltfMaterial);
     if (guid == Guid.Empty) {
       return null;
     } else {
       BrushDescriptor desc;
-      TiltBrushToolkit.TbtSettings.BrushManifest.BrushesByGuid.TryGetValue(
+      TbtSettings.Instance.TryGetBrush(
           guid, out desc);
       if (desc == null) {
         // Maybe it's templated from a pbr material; the template guid
         // can be found on the shader.
         Gltf1Material gltf1Material = gltfMaterial as Gltf1Material;
         if (gltf1Material == null) {
-          Debug.LogErrorFormat("Unexpected: glTF2 Tilt Brush material");
           return null;
         }
         Guid templateGuid = ParseGuidFromShader((Gltf1Material)gltfMaterial);
-        TiltBrushToolkit.TbtSettings.BrushManifest.BrushesByGuid.TryGetValue(
+        TbtSettings.Instance.TryGetBrush(
           templateGuid, out desc);
       }
       return desc;

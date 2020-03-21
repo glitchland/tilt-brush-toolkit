@@ -22,10 +22,27 @@ using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 using UnityEngine;
 
-using Semantic = TiltBrushToolkit.BrushDescriptor.Semantic;
 using Debug = UnityEngine.Debug;
+using Semantic = TiltBrushToolkit.BrushDescriptor.Semantic;
 
 namespace TiltBrushToolkit {
+
+public class Null {
+  protected Null() {}
+}
+
+/// A callback that allows users to know when the import process has processed
+/// a gltf material into a Unity material.
+public interface IImportMaterialCollector {
+  // Pass:
+  //   unityMaterial - the template material, and the actual material used
+  //     (which may be identical to the template material)
+  //   gltfMaterial - the gltf node from which unityMaterial was looked up or created
+  //
+  // It's acceptable to call this redundantly.
+  void Add(GltfMaterialConverter.UnityMaterial unityMaterial,
+           GltfMaterialBase gltfMaterial);
+}
 
 public static class ImportGltf {
   /// <summary>
@@ -42,6 +59,10 @@ public static class ImportGltf {
   /// </summary>
   private const float MIN_VALID_NORMAL_SQRMAGNITUDE = float.Epsilon;  // Only fix normals that are exactly the 0 vector.
 
+  // Attributes intended only for the Tilt Brush Toolkit are prefixed with this, eg
+  // "_TB_UNITY_TEXCOORD_0". This distinguishes them a true TEXCOORD_0 that matches gltf's semantics
+  private const string kTookitAttributePrefix = "_TB_UNITY_";
+
   private static readonly JsonSerializer kSerializer = new JsonSerializer {
     ContractResolver = new GltfJsonContractResolver()
   };
@@ -54,6 +75,7 @@ public static class ImportGltf {
     public List<Mesh> meshes;
     public List<Material> materials;
     public List<Texture2D> textures;
+    public IImportMaterialCollector materialCollector = null;
   }
 
   /// <summary>State data used by the import process.</summary>
@@ -87,6 +109,44 @@ public static class ImportGltf {
     }
   }
 
+  public class GltfFileInfo : IDisposable {
+    public string Path { get; private set; }
+    public GltfSchemaVersion Version { get; private set; }
+    public bool IsGlb { get; private set; }
+    public TextReader Reader { get; private set; }
+
+    public GltfFileInfo(string path) {
+      Path = path;
+      if (GlbParser.GetGlbVersion(path) is uint glbFormatVersion) {
+        IsGlb = true;
+        Version = (glbFormatVersion == 1 ? GltfSchemaVersion.GLTF1 : GltfSchemaVersion.GLTF2);
+        Reader = new StringReader(GlbParser.GetJsonChunkAsString(path));
+      } else {
+        IsGlb = false;
+        string json = File.ReadAllText(path);
+        var gltf1Or2 = JsonConvert.DeserializeObject<Gltf1Or2>(json);
+        var versionString = gltf1Or2?.asset?.version ?? "2";  // default to 2, I guess?
+        Version = versionString.StartsWith("1") ? GltfSchemaVersion.GLTF1 : GltfSchemaVersion.GLTF2;
+        Reader = new StringReader(json);
+      }
+    }
+
+    public void Dispose() {
+      if (Reader != null) {
+        Reader.Dispose();
+      }
+    }
+  }
+
+  // Used only by GetVersionAndReader. The layout of a gltf file changes significantly
+  // between gltf v1 and v2, but thankfully the location of the version info didn't change.
+  #pragma warning disable 0649
+  [Serializable]
+  private class Gltf1Or2 {
+    public GltfAsset asset;
+  }
+  #pragma warning restore 0649
+
   /// <summary>
   /// Import a gltf model.
   /// If you would like to perform some of the work off the main thread, use
@@ -95,15 +155,17 @@ public static class ImportGltf {
   /// <param name="gltfVersion">The glTF format version to use.</param>
   /// <param name="gltfStream">A stream containing the contents of the .gltf file. Ownership of the stream is transferred; it will be closed after the import.</param>
   /// <param name="uriLoader">For fetching relative URIs referenced by the .gltf file.</param>
+  /// <param name="materialCollector">May be null if you don't need it.</param>
   /// <param name="options">The options to import the model with.</param>
   /// <seealso cref="ImportGltf.BeginImport" />
   /// <seealso cref="ImportGltf.EndImport" />
   public static GltfImportResult Import(
-      GltfSchemaVersion gltfVersion, TextReader gltfStream, IUriLoader uriLoader,
-      PolyImportOptions options) {
-    using (var state = BeginImport(gltfVersion, gltfStream, uriLoader, options)) {
-      IEnumerable meshCreator;
-      GltfImportResult result = EndImport(state, uriLoader, out meshCreator);
+      string gltfOrGlbPath, IUriLoader uriLoader,
+      IImportMaterialCollector materialCollector,
+      GltfImportOptions options) {
+    using (var state = BeginImport(gltfOrGlbPath, uriLoader, options)) {
+      IEnumerable<Null> meshCreator;
+      GltfImportResult result = EndImport(state, uriLoader, materialCollector, out meshCreator);
       foreach (var unused in meshCreator) {
         // create meshes!
       }
@@ -125,7 +187,7 @@ public static class ImportGltf {
         return gltf1Root;
       }
       case GltfSchemaVersion.GLTF2:
-        var gltf2Root= kSerializer.Deserialize<Gltf2Root>(reader);
+        var gltf2Root = kSerializer.Deserialize<Gltf2Root>(reader);
         if (gltf2Root == null || gltf2Root.nodes == null) {
           throw new Exception("Failed to parse GLTF2. File is empty or in the wrong format.");
         }
@@ -135,20 +197,43 @@ public static class ImportGltf {
     }
   }
 
-  private static void SanityCheckImportOptions(PolyImportOptions options) {
-    if (options.rescalingMode == PolyImportOptions.RescalingMode.CONVERT &&
+  private static void SanityCheckImportOptions(GltfImportOptions options) {
+    if (options.rescalingMode == GltfImportOptions.RescalingMode.CONVERT &&
         options.scaleFactor == 0.0f) {
       // If scaleFactor is exactly zero (not just close), it's PROBABLY because of user error,
-      // because this is what happens when you do "new PolyImportOptions()" and forget to set
-      // scaleFactor. PolyImportOptions is a struct so we can't have a default value.
-      throw new Exception("scaleFactor must be != 0 for PolyImportOptions CONVERT mode. " +
+      // because this is what happens when you do "new GltfImportOptions()" and forget to set
+      // scaleFactor. GltfImportOptions is a struct so we can't have a default value.
+      throw new Exception("scaleFactor must be != 0 for GltfImportOptions CONVERT mode. " +
           "Did you forget to set scaleFactor?");
-    } else if (options.rescalingMode == PolyImportOptions.RescalingMode.FIT &&
+    } else if (options.rescalingMode == GltfImportOptions.RescalingMode.FIT &&
         options.desiredSize <= 0.0f) {
-      throw new Exception("desiredSize must be > 0 for PolyImportOptions FIT mode. " +
+      throw new Exception("desiredSize must be > 0 for GltfImportOptions FIT mode. " +
           "Did you forget to set desiredSize?");
     }
 
+  }
+
+  private static void CheckCompatibility(
+      GltfRootBase root, string versionKey, Version currentVersion) {
+    var extras = root.asset.extras;
+    if (extras == null) { return; }
+
+    string requiredVersion;
+    extras.TryGetValue(versionKey, out requiredVersion);
+    if (requiredVersion != null) {
+      Match match = Regex.Match(requiredVersion, @"^([0-9]+)\.([0-9]+)");
+      if (match.Success) {
+        var required = new Version {
+            major = int.Parse(match.Groups[1].Value),
+            minor = int.Parse(match.Groups[2].Value)
+        };
+        if (required > currentVersion) {
+          Debug.LogWarningFormat(
+              "This file specifies {0} {1}; you are currently using {2}",
+              versionKey, required, currentVersion);
+        }
+      }
+    }
   }
 
   /// <summary>
@@ -157,14 +242,28 @@ public static class ImportGltf {
   /// </summary>
   /// <returns>An object which should be passed to <seealso cref="ImportGltf.EndImport"/> and then disposed</returns>
   public static ImportState BeginImport(
-      GltfSchemaVersion gltfVersion, TextReader stream, IUriLoader uriLoader,
-      PolyImportOptions options) {
-
+      string gltfOrGlbPath, IUriLoader uriLoader, GltfImportOptions options) {
+    if (uriLoader == null) { throw new ArgumentNullException("uriLoader"); }
     SanityCheckImportOptions(options);
 
-    using (var reader = new JsonTextReader(stream)) {
-      var root = DeserializeGltfRoot(gltfVersion, reader);
-      root.Dereference(uriLoader);
+    using (var info = new GltfFileInfo(gltfOrGlbPath))
+    using (var reader = new JsonTextReader(info.Reader)) {
+      var root = DeserializeGltfRoot(info.Version, reader);
+      if (root == null) { throw new NullReferenceException("root"); }
+      root.Dereference(info.IsGlb, uriLoader);
+
+      // Convert attribute names to the ones we expect.
+      // This may eg overwrite TEXCOORD_0 with _TB_UNITY_TEXCOORD_0 (which will contain more data)
+      foreach (var mesh in root.Meshes) {
+        foreach (var prim in mesh.Primitives) {
+          string[] attrs = prim.GetAttributeNames()
+              .Where(n => n.StartsWith(kTookitAttributePrefix)).ToArray();
+          foreach (var tbAttr in attrs) {
+            string renamed = tbAttr.Substring(kTookitAttributePrefix.Length);
+            prim.ReplaceAttribute(tbAttr, renamed);
+          }
+        }
+      }
 
       // Extract Google-specific information.
       if (root.asset != null) {
@@ -178,28 +277,11 @@ public static class ImportGltf {
           }
         }
 
-        // Allow the glTF to define the limit of PT's data forward-compatibility
-        if (root.asset.extras != null) {
-          string requiredPtVersion;
-          root.asset.extras.TryGetValue("requiredTiltBrushToolkitVersion", out requiredPtVersion);
-          if (requiredPtVersion != null) {
-            Match match = Regex.Match(requiredPtVersion, @"^([0-9]+)\.([0-9]+)");
-            if (match.Success) {
-              var required = new Version {
-                major = int.Parse(match.Groups[1].Value),
-                minor = int.Parse(match.Groups[2].Value)
-              };
-              if (required > TbtSettings.Version) {
-                Debug.LogWarningFormat(
-                    "This file requires Tilt Brush Toolkit {0}; you are currently using {1}",
-                    required, TbtSettings.Version);
-              }
-            }
-          }
-        }
+        // Allow the glTF to define the limit of our data forward-compatibility
+        CheckCompatibility(root, "requiredTiltBrushToolkitVersion", TbtSettings.TbtVersion);
       }
 
-      var state = new ImportState(AxisConvention.kGltf2) {
+      var state = new ImportState(options.axisConventionOverride ?? AxisConvention.kGltf2) {
         root = root,
         desiredScene = root.ScenePtr,
       };
@@ -243,10 +325,10 @@ public static class ImportGltf {
   // the object's geometry to keep within Unity's modelview scale limits, and as a
   // result have to compensate for the scale at the top node.
   static void ComputeScaleFactor(
-      PolyImportOptions options, Bounds boundsInGltfSpace,
+      GltfImportOptions options, Bounds boundsInGltfSpace,
       out float directScaleFactor, out float nodeScaleFactor) {
     switch (options.rescalingMode) {
-      case PolyImportOptions.RescalingMode.CONVERT:
+      case GltfImportOptions.RescalingMode.CONVERT:
         directScaleFactor = options.scaleFactor;
         nodeScaleFactor = 1;
         float requiredShrink;
@@ -263,7 +345,7 @@ public static class ImportGltf {
           }
         }
         return;
-      case PolyImportOptions.RescalingMode.FIT:
+      case GltfImportOptions.RescalingMode.FIT:
         // User wants a specific size, so derive it from the bounding box.
         if (!ComputeScaleFactorToFit(boundsInGltfSpace, options.desiredSize, out directScaleFactor)) {
           Debug.LogWarningFormat("Could not automatically resize object; object is too small or empty.");
@@ -305,6 +387,12 @@ public static class ImportGltf {
       // "Blocks" without a version number was generated by old versions of Blocks,
       // and can also be generated by debug builds. For these cases, assume the baseline
       // version of blocks.
+      version = new Version { major = 1, minor = 0 };
+      return true;
+    }
+    // Likely it's "glTF 1-to-2 Upgrader for Google Blocks"
+    // No other Blocks version info, so assume 1.0
+    if (generatorString.Contains("Google Blocks")) {
       version = new Version { major = 1, minor = 0 };
       return true;
     }
@@ -367,20 +455,25 @@ public static class ImportGltf {
   /// </summary>
   /// <param name="state">Returned by BeginImport</param>
   /// <param name="uriLoader">For fetching relative URIs referenced by the .gltf file.</param>
+  /// <param name="materialCollector">May be null if you don't need it</param>
   /// <param name="meshCreator">out reference to an enumerable that should be enumerated
   /// to create the unity meshes.</param>
   static public GltfImportResult EndImport(
-      ImportState state, IUriLoader uriLoader, out IEnumerable meshCreator) {
+      ImportState state,
+      IUriLoader uriLoader,
+      IImportMaterialCollector materialCollector,
+      out IEnumerable<Null> meshCreator) {
     var result = new GltfImportResult {
-      root = new GameObject("PolyImport"),
+      root = new GameObject("GltfImport"),
       meshes = new List<Mesh>(),
+      materialCollector = materialCollector
     };
     meshCreator = CreateGameObjectsFromNodes(state, result, uriLoader);
     return result;
   }
 
 
-  static IEnumerable CreateGameObjectsFromNodes(
+  static IEnumerable<Null> CreateGameObjectsFromNodes(
       ImportState state, GltfImportResult result, IUriLoader uriLoader) {
     var loaded = new List<Texture2D>();
     foreach (var unused in GltfMaterialConverter.LoadTexturesCoroutine(
@@ -413,7 +506,13 @@ public static class ImportGltf {
       ImportState state, Transform parent, GltfNodeBase node, GltfImportResult result,
       GltfMaterialConverter matConverter, Vector3 translationToApply) {
     if (node.Mesh == null && !node.Children.Any()) {
-      yield break;
+      if (node.name != null && node.name.StartsWith("empty_")) {
+        // explicitly-empty nodes are used to mark things like non-exportable models
+        /* fall through */
+      } else {
+        // Other empty nodes can creep in, like the SceneLight_ nodes. Don't want those.
+        yield break;
+      }
     }
 
     GameObject obj = new GameObject(node.name);
@@ -467,7 +566,13 @@ public static class ImportGltf {
     // https://github.com/KhronosGroup/glTF/issues/1065
     for (int iP = 0; iP < mesh.PrimitiveCount; ++iP) {
       GltfPrimitiveBase prim = mesh.GetPrimitiveAt(iP);
-      GltfMaterialConverter.UnityMaterial? unityMaterial = matConverter.GetMaterial(prim.MaterialPtr);
+      GltfMaterialConverter.UnityMaterial? unityMaterial =
+          matConverter.GetMaterial(prim.MaterialPtr);
+      if (result.materialCollector != null && unityMaterial != null) {
+        Debug.Assert(unityMaterial.Value.material != null);
+        // Generate IExportableMaterial for later exports.
+        result.materialCollector.Add(unityMaterial.Value, prim.MaterialPtr);
+      }
 
       if (prim.precursorMeshes == null) {
         continue;
@@ -524,6 +629,7 @@ public static class ImportGltf {
     mesh.vertices = precursor.vertices;
     if (precursor.normals != null)  { mesh.normals = precursor.normals;   }
     if (precursor.colors != null)   { mesh.colors = precursor.colors;     }
+    if (precursor.colors32 != null) { mesh.colors32 = precursor.colors32; }
     if (precursor.tangents != null) { mesh.tangents = precursor.tangents; }
     for (int i = 0; i < precursor.uvSets.Length; ++i) {
       if (precursor.uvSets[i] != null) {
@@ -671,8 +777,11 @@ public static class ImportGltf {
       basisChange *= Matrix4x4.Scale(Vector3.one * scaleFactor);
     } else if (semantic == Semantic.UnitlessVector) {
       // use basisChange as-is
-    } else if (semantic == Semantic.XyIsUvZIsDistance && scaleFactor != 1) {
-      if (data is Vector3[]) {
+    } else if (semantic == Semantic.XyIsUvZIsDistance) {
+      // Do unit change
+      if (scaleFactor == 1) {
+        // Don't bother
+      } else if (data is Vector3[]) {
         Vector3[] vData = (Vector3[])data;
         for (int i = 0; i < vData.Length; ++i) {
           var tmp = vData[i]; tmp.z *= scaleFactor; vData[i] = tmp;
@@ -685,6 +794,8 @@ public static class ImportGltf {
       } else {
         Debug.LogWarningFormat("Cannot change basis of type {0}", data.GetType());
       }
+      // no basis-change needed
+      return;
     } else {
       // no basis-change or unit-change needed
       return;
@@ -706,18 +817,22 @@ public static class ImportGltf {
   }
 
   // Annotates GltfPrimitive with materials, precursorMeshes
-  static List<MeshPrecursor> CreateMeshPrecursorsFromPrimitive(ImportState state, GltfPrimitiveBase prim) {
+  static List<MeshPrecursor> CreateMeshPrecursorsFromPrimitive(
+      ImportState state, GltfPrimitiveBase prim) {
     if (prim.mode != GltfPrimitiveBase.Mode.TRIANGLES) {
       Debug.LogWarningFormat("Cannot create mesh from {0}", prim.mode);
       return null;
     }
 
     BrushDescriptor desc = GltfMaterialConverter.LookupBrushDescriptor(prim.MaterialPtr);
-
     if (desc != null) {
       if (desc.m_bFbxExportNormalAsTexcoord1) {
-        // make the gltf look like what the fbx shaders expect
-        // normals moved to texcoord1
+        // Because of historical compat issues with fbx, some TBT shaders are slightly different
+        // from TB's shaders; they read from TEXCOORD1 instead of NORMAL, and there is a
+        // corresponding data change.
+        // - For fbx we move NORMAL -> TEXCOORD1 at export time.
+        // - For gltf we are moving NORMAL -> TEXCOORD1 at import time.
+        // If we ever fix our TBT shaders to not be different from TB shaders, we can skip this.
         prim.ReplaceAttribute("NORMAL", "TEXCOORD_1");
       }
     }
@@ -747,7 +862,6 @@ public static class ImportGltf {
       }
     }
 
-
     List<MeshPrecursor> meshes = new List<MeshPrecursor>();
 
     // Tilt Brush particle meshes are sensitive to being broken up.
@@ -770,8 +884,7 @@ public static class ImportGltf {
         // count. In these cases, be lenient and ignore the missing data.
         if (attribRange.min >= accessor.count) {
           // No data at all for this accessor (entirely out of range).
-          // This is a verbose log, not a warning, because it's accepted as "correct".
-          PtDebug.LogVerboseFormat("Attribute {0} has no data: wanted range {1}, count was {2}",
+          Debug.LogWarningFormat("Attribute {0} has no data: wanted range {1}, count was {2}",
               semantic, attribRange, accessor.count);
           // Ignore this attribute.
           continue;
@@ -792,76 +905,7 @@ public static class ImportGltf {
         // all the vertices, even if (due to the problems described above) the accessor is missing
         // some elements. The missing elements will be initialized to zero.
         data = PadArrayToSize(data, subset.vertices.Size);
-        switch (semantic) {
-        case "POSITION":
-          ChangeBasisAndApplyScale(data, Semantic.Position, state.scaleFactor, state.unityFromGltf);
-          mesh.vertices = (Vector3[]) data;
-          break;
-        case "NORMAL":
-          ChangeBasisAndApplyScale(
-              data, Semantic.UnitlessVector, state.scaleFactor, state.unityFromGltf);
-          mesh.normals = (Vector3[]) data;
-          break;
-        case "COLOR":
-        case "COLOR_0": {
-          Color[] colors = data as Color[];
-          if (colors == null) {
-            Debug.LogWarningFormat(
-                "Unsupported: color buffer of type {0}",
-                data == null ? "null" : data.GetType().ToString());
-            break;
-          }
-
-          var desiredSpace = GetDesiredColorSpace(state.root);
-          var actualSpace = GetActualColorSpace(state.root);
-          if (actualSpace == ColorSpace.Unknown) {
-            Debug.LogWarning("Reading color buffer in unknown color space");
-            // Guess at something, so we at least offer consistent results.
-            // sRGB is the most likely.
-            actualSpace = ColorSpace.Srgb;
-          }
-
-          if (desiredSpace == ColorSpace.Srgb && actualSpace == ColorSpace.Linear) {
-            for (int i = 0; i < colors.Length; ++i) {
-              colors[i] = colors[i].gamma;
-            }
-          } else if (desiredSpace == ColorSpace.Linear && actualSpace == ColorSpace.Srgb) {
-            for (int i = 0; i < colors.Length; ++i) {
-              colors[i] = colors[i].linear;
-            }
-          }
-
-          mesh.colors = colors;
-          break;
-        }
-        case "TANGENT":
-          ChangeBasisAndApplyScale(
-              data, Semantic.UnitlessVector, state.scaleFactor, state.unityFromGltf);
-          mesh.tangents = (Vector4[]) data;
-          break;
-        case "TEXCOORD_0": {
-          var ptSemantic = GetTexcoordSemantic(state, accessor, desc, 0);
-          ChangeBasisAndApplyScale(data, ptSemantic, state.scaleFactor, state.unityFromGltf);
-          ChangeUvBasis(data, ptSemantic);
-          mesh.uvSets[0] = data;
-          break;
-        }
-        case "TEXCOORD_1": {
-          var ptSemantic = GetTexcoordSemantic(state, accessor, desc, 1);
-          ChangeBasisAndApplyScale(data, ptSemantic, state.scaleFactor, state.unityFromGltf);
-          ChangeUvBasis(data, ptSemantic);
-          mesh.uvSets[1] = data;
-          break;
-        }
-        case "VERTEXID":
-          // This was an attempt to get vertex id in webgl, but it didn't work out.
-          // The data is not fully hooked-up in the gltf, and it doesn't make its way to THREE.
-          // So: ignore it.
-          break;
-        default:
-          Debug.LogWarningFormat("Unhandled attribute {0}", semantic);
-          break;
-        }
+        StoreDataInMesh(state, prim.MaterialPtr, semantic, data, mesh);
       }
 
       {
@@ -880,10 +924,112 @@ public static class ImportGltf {
 
       meshes.Add(mesh);
     }
-    foreach (MeshPrecursor mesh in meshes) {
-      FixInvalidNormals(mesh);
+
+    // This was added in PT to address bad data in Poly, but it can force the data
+    // to be unit-length; don't do it unless we know that's a valid fix.
+    if (GetNormalSemantic(state, prim.MaterialPtr) == Semantic.UnitlessVector) {
+      foreach (MeshPrecursor mesh in meshes) {
+        FixInvalidNormals(mesh);
+      }
     }
     return meshes;
+  }
+
+  // Takes raw data from glTF (data), then:
+  // - Looks up precise semantics from semantic and desc.uvNSemantic
+  // - Uses semantic to make basis, unit, scale transformations
+  // - Uses semantic to determine where to store the data
+  private static void StoreDataInMesh(
+      ImportState state,
+      GltfMaterialBase material, string semantic, Array data,
+      MeshPrecursor mesh) {
+    int txcChannel;
+    switch (semantic) {
+    case "POSITION":
+      ChangeBasisAndApplyScale(data, Semantic.Position, state.scaleFactor, state.unityFromGltf);
+      mesh.vertices = (Vector3[]) data;
+      break;
+    case "NORMAL":
+      ChangeBasisAndApplyScale(
+          data, GetNormalSemantic(state, material), state.scaleFactor, state.unityFromGltf);
+      mesh.normals = (Vector3[]) data;
+      break;
+    case "COLOR":
+    case "COLOR_0": {
+      if (! (data is Color[] || data is Color32[])) {
+        Debug.LogWarning($"Unsupported: color buffer of type {data?.GetType()}");
+        break;
+      }
+
+      var desiredSpace = GetDesiredColorSpace(state.root);
+      var actualSpace = GetActualColorSpace(state.root);
+      if (actualSpace == ColorSpace.Unknown) {
+        Debug.LogWarning("Reading color buffer in unknown color space");
+        // Guess at something, so we at least offer consistent results.
+        // sRGB is the most likely.
+        actualSpace = ColorSpace.Srgb;
+      }
+
+      if (desiredSpace != actualSpace) {
+        Color[] colors = data as Color[];
+        if (colors == null) {
+          // Explicitly widen so we get more precision in the colorspace conversion
+          data = colors = ((Color32[])data).Select(c32 => (Color)c32).ToArray();
+        }
+        if (desiredSpace == ColorSpace.Srgb && actualSpace == ColorSpace.Linear) {
+          for (int i = 0; i < colors.Length; ++i) {
+            colors[i] = colors[i].gamma;
+          }
+        } else if (desiredSpace == ColorSpace.Linear && actualSpace == ColorSpace.Srgb) {
+          for (int i = 0; i < colors.Length; ++i) {
+            colors[i] = colors[i].linear;
+          }
+        }
+      }
+
+      if (data is Color32[] colors32) {
+        mesh.colors32 = colors32;
+      } else {
+        mesh.colors = (Color[])data;
+      }
+      break;
+    }
+    case "TANGENT":
+      ChangeBasisAndApplyScale(
+          data, Semantic.UnitlessVector, state.scaleFactor, state.unityFromGltf);
+      mesh.tangents = (Vector4[]) data;
+      break;
+    case "TEXCOORD_0":
+      txcChannel = 0;
+      goto GenericTexcoord;
+    case "TEXCOORD_1":
+      txcChannel = 1;
+      goto GenericTexcoord;
+    case "TEXCOORD_2":
+      txcChannel = 2;
+      goto GenericTexcoord;
+    case "TEXCOORD_3":
+      txcChannel = 3;
+      goto GenericTexcoord;
+GenericTexcoord:
+      var ptSemantic = GetTexcoordSemantic(state, material, txcChannel);
+      ChangeBasisAndApplyScale(data, ptSemantic, state.scaleFactor, state.unityFromGltf);
+      ChangeUvBasis(data, ptSemantic);
+      mesh.uvSets[txcChannel] = data;
+      break;
+    case "VERTEXID":
+      // This was an attempt to get vertex id in webgl, but it didn't work out.
+      // The data is not fully hooked-up in the gltf, and it doesn't make its way to THREE.
+      // So: ignore it.
+      break;
+    case "_TB_TIMESTAMP":
+      // Tilt Brush .glb files don't ever have txc2, so this is a safe place to stuff timestamps
+      mesh.uvSets[2] = data;
+      break;
+    default:
+      Debug.LogWarningFormat("Unhandled attribute {0}", semantic);
+      break;
+    }
   }
 
   /// <summary>
@@ -956,10 +1102,28 @@ public static class ImportGltf {
     }
   }
 
+  // Within TB, TB brush materials will return Semantic.Unspecified or Semantic.Position.
+  // This method is useful for skipping overzealous code that wants to "fix" TB's normals.
+  static Semantic GetNormalSemantic(ImportState state, GltfMaterialBase material) {
+#if TILT_BRUSH
+    // "normalSemantic" doesn't exist in the stripped-down BrushDescriptor used by TBT.
+    // Only particles use a non-standard semantic for Normals.
+    // TBT puts vert.normal -> vert.txc1 at import time (see CreateMeshPrecursorsFromPrimitive).
+    // So BD.normalSemantic in TB becomes BD.txc1Semantic in TBT.
+    if (state.root.tiltBrushVersion != null) {
+      BrushDescriptor desc = GltfMaterialConverter.LookupBrushDescriptor(material);
+      if (desc != null) {
+        return desc.VertexLayout.normalSemantic;
+      }
+    }
+#endif
+    return Semantic.UnitlessVector;
+  }
+
   // Returns a Semantic which tells us how to manipulate the uv to convert it
   // from glTF conventions to Unity conventions.
   static Semantic GetTexcoordSemantic(
-      ImportState state, GltfAccessorBase accessor, BrushDescriptor desc, int uvChannel) {
+      ImportState state, GltfMaterialBase material, int uvChannel) {
     // GL and Unity use the convention "texture origin is lower-left"
     // glTF, DX, Metal, and modern APIs use the convention "texture origin is upper-left"
     // We want to match the logic used by the exporter which generated this gltf, down to its bugs.
@@ -968,12 +1132,23 @@ public static class ImportGltf {
       // Not Tilt Brush, so we can sort-of safely assume texcoord.xy is a UV coordinate.
       return Semantic.XyIsUv;
     } else {
+      BrushDescriptor desc = GltfMaterialConverter.LookupBrushDescriptor(material);
       // Tilt Brush doesn't use "correct" logic (flip y of every texcoord) because that
       // fails if any importers choose the strategy "flip texture" rather than "flip texcoord.y".
       // Thus it needs to be data-driven.
       if (desc == null) {
-        Debug.LogWarning("Unexpected: TB geometry without descriptor");
-        return Semantic.Unspecified;
+        // Might happen in gltf2
+        if (!(material is Gltf2Material material2)) {
+          Debug.LogWarning("Unexpected: Non-BrushDescriptor geometry in gltf1");
+          return Semantic.Unspecified;
+        } else {
+          if (material2.pbrMetallicRoughness == null) {
+            Debug.LogWarning("Unexpected: Non-BrushDescriptor, non-PBR geometry in gltf2");
+          }
+          // Pretty safe assumption, since gltf non-texcoord data should be in non-TEXCOORD
+          // semantics (if you're following the spec)
+          return Semantic.XyIsUv;
+        }
       } else {
         // VERY SUBTLE incorrectness here -- TB pre-15 didn't flip y on Semantic.XyIsUvZIsDistance
         // because of an exporter bug. To be perfectly correct, if version <= 14,
@@ -1033,6 +1208,15 @@ public static class ImportGltf {
         result = destination;
         return true;
       }
+    } else if (accessor.type == "VEC4"
+               && accessor.componentType == GltfAccessorBase.ComponentType.UNSIGNED_BYTE
+               && semantic.StartsWith("COLOR")) {
+      var destination = new Color32[eltRange.Size];
+      fixed (void* destPtr = destination) {
+        ReadAccessorData(accessor, eltRange, sizeof(Color32), (IntPtr)destPtr);
+      }
+      result = destination;
+      return true;
     } else if (accessor.type == "SCALAR" && accessor.componentType == FLOAT) {
       var destination = new float[eltRange.Size];
       fixed (void* destPtr = destination) {
@@ -1058,8 +1242,8 @@ public static class ImportGltf {
       return true;
     } else {
       Debug.LogWarningFormat(
-          "Unknown accessor type {0} componentType {1}",
-          accessor.type, accessor.componentType);
+          "Unknown accessor type {0} componentType {1} for {2}",
+          accessor.type, accessor.componentType, semantic);
     }
     result = null;
     return false;

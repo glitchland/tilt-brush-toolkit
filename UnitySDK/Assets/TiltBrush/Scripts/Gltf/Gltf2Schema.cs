@@ -21,6 +21,11 @@ using UnityEngine;
 
 namespace TiltBrushToolkit {
 [Serializable]
+public class GOOGLE_tilt_brush_material {
+  public string guid;
+}
+
+[Serializable]
 public sealed class Gltf2Root : GltfRootBase {
   public List<Gltf2Buffer> buffers;
   public List<Gltf2Accessor> accessors;
@@ -59,6 +64,13 @@ public sealed class Gltf2Root : GltfRootBase {
     }
   }
 
+  public override IEnumerable<GltfMeshBase> Meshes {
+    get {
+      if (meshes == null) { return new GltfMeshBase[0]; }
+      return meshes.Cast<GltfMeshBase>();
+    }
+  }
+
   // Disposable pattern, with Dispose(void) and Dispose(bool), as recommended by:
   // https://docs.microsoft.com/en-us/dotnet/api/system.idisposable
   protected override void Dispose(bool disposing) {
@@ -75,24 +87,20 @@ public sealed class Gltf2Root : GltfRootBase {
   }
 
   /// Map gltfIndex values (ie, int indices) names to the objects they refer to
-  public override void Dereference(IUriLoader uriLoader = null, PolyFormat gltfFormat = null) {
+  public override void Dereference(bool isGlb, IUriLoader uriLoader = null) {
     // "dereference" all the indices
     scenePtr = scenes[scene];
     for (int i = 0; i < buffers.Count; i++) {
       Gltf2Buffer buffer = buffers[i];
       buffer.gltfIndex = i;
+      if (buffer.uri == null && !(i == 0 && isGlb)) {
+        Debug.LogErrorFormat("Buffer {0} isGlb {1} has null uri", i, isGlb);
+        // leave the data buffer null
+        return;
+      }
+
       if (uriLoader != null) {
-        // Only id 0 may lack a URI; this indicates that it is the binary chunk.
-        Debug.Assert(! (i != 0 && buffer.uri == null));
         buffer.data = uriLoader.Load(buffer.uri);
-      } else if (gltfFormat != null) {
-        // Runtime import case; the uris refer to resource files in the PolyFormat.
-        foreach (PolyFile resource in gltfFormat.resources) {
-          if (resource.relativePath == buffer.uri) {
-            buffer.data = new Reader(resource.contents);
-            break;
-          }
-        }
       }
     }
     for (int i = 0; i < accessors.Count; i++) {
@@ -133,6 +141,7 @@ public sealed class Gltf2Root : GltfRootBase {
         DereferenceTextureInfo(mat.pbrMetallicRoughness.baseColorTexture);
         DereferenceTextureInfo(mat.pbrMetallicRoughness.metallicRoughnessTexture);
       }
+      DereferenceTextureInfo(mat.extensions?.KHR_materials_pbrSpecularGlossiness?.diffuseTexture);
     }
     for (int i = 0; i < nodes.Count; i++) {
       nodes[i].gltfIndex = i;
@@ -229,6 +238,9 @@ public class Gltf2Material : GltfMaterialBase {
       if (pbrMetallicRoughness != null) {
         yield return pbrMetallicRoughness.baseColorTexture;
         yield return pbrMetallicRoughness.metallicRoughnessTexture;
+      } else if (extensions?.KHR_materials_pbrSpecularGlossiness != null) {
+        var specGloss = extensions.KHR_materials_pbrSpecularGlossiness;
+        yield return specGloss.diffuseTexture;
       }
     }
   }
@@ -249,6 +261,13 @@ public class Gltf2Material : GltfMaterialBase {
   public Vector3 emissiveFactor;
   public string alphaMode;
   public bool doubleSided;
+  public Extensions extensions;
+
+  [Serializable]
+  public class Extensions {
+    public GOOGLE_tilt_brush_material GOOGLE_tilt_brush_material;
+    public KHR_materials_pbrSpecularGlossiness KHR_materials_pbrSpecularGlossiness;
+  }
 
   [Serializable]
   public class PbrMetallicRoughness {
@@ -257,6 +276,14 @@ public class Gltf2Material : GltfMaterialBase {
     public float roughnessFactor = 1.0f;
     public TextureInfo baseColorTexture;
     public TextureInfo metallicRoughnessTexture;
+  }
+
+  [Serializable]
+  public class KHR_materials_pbrSpecularGlossiness {
+    public Color diffuseFactor = Color.white;
+    public TextureInfo diffuseTexture;
+    // public Vector3 specularFactor; not supported
+    public float glossinessFactor = 1.0f;
   }
 
   [Serializable]

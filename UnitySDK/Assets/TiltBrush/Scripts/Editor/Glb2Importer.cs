@@ -24,9 +24,9 @@ using UnityEditor.Experimental.AssetImporters;
 
 namespace TiltBrushToolkit {
 
-[ScriptedImporter(kVersion, "glb1", kImportQueueOffset)]
-public class Glb1Importer : ScriptedImporter {
-  const int kVersion = 1;
+[ScriptedImporter(kVersion, "glb", kImportQueueOffset)]
+public class Glb2Importer : ScriptedImporter {
+  const int kVersion = 2;
   // ImportGltf needs to reference meshes and textures, so the glb import
   // must come after them. We're assuming that Unity built-in asset types
   // import at queue offset = 0.
@@ -63,33 +63,6 @@ public class Glb1Importer : ScriptedImporter {
     result.root.name = objectName;
     ctx.AddObjectToAsset("ROOT", result.root);
     ctx.SetMainObject(result.root);
-  }
-}
-
-[CustomEditor(typeof(Glb1Importer))]
-public class Glb1ImporterEditor : ScriptedImporterEditor {
-  // SerializedProperty m_UniformScaleProp;
-
-  public override void OnEnable() {
-    base.OnEnable();
-    // m_UniformScaleProp = serializedObject.FindProperty("m_UniformScale");
-  }
-
-  public override Texture2D RenderStaticPreview(string assetPath, Object[] subAssets, int width, int height) {
-    return base.RenderStaticPreview(assetPath, subAssets, width, height);
-  }
-
-  protected override bool useAssetDrawPreview {
-    get { return base.useAssetDrawPreview; }
-  }
-
-  public override void OnInspectorGUI() {
-    base.OnInspectorGUI();
-    // serializedObject.Update();
-    // EditorGUILayout.PropertyField(m_UniformScaleProp);
-    // EditorGUILayout.PropertyField(m_UniformScaleProp);
-    // serializedObject.ApplyModifiedProperties();
-    // ApplyRevertGUI();
   }
 }
 

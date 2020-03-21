@@ -13,11 +13,16 @@
 // limitations under the License.
 
 using System;
+
 using UnityEngine;
 
 namespace TiltBrushToolkit {
 
 public class TbtSettings : ScriptableObject {
+  [Serializable]
+  public struct PbrMaterialInfo {
+    public Material material;
+  }
   const string kAssetName = "TiltBrushToolkitSettings";
 
   private static TbtSettings sm_Instance;
@@ -34,8 +39,8 @@ public class TbtSettings : ScriptableObject {
     }
   }
 
-  public static Version Version {
-    get { return new Version { major = 21, minor = 0 }; }
+  public static Version TbtVersion {
+    get { return new Version { major = 23, minor = 0 }; }
   }
 
   public static BrushManifest BrushManifest {
@@ -44,11 +49,15 @@ public class TbtSettings : ScriptableObject {
 
   [SerializeField] private BrushManifest m_BrushManifest = null;
 
-  // This is the same material used by the BrushDescriptor "PbrTemplate".
-  // The Brush descriptor version is used when Tilt Brush exports to gltf1 (which has no PBR)
-  public Material m_BasePbrOpaqueDoubleSidedMaterial;
-  // This is the same material used by the BrushDescriptor "PbrTransparentTemplate"
-  public Material m_BasePbrBlendDoubleSidedMaterial;
+  public PbrMaterialInfo m_PbrOpaqueSingleSided;
+  public PbrMaterialInfo m_PbrOpaqueDoubleSided;
+  public PbrMaterialInfo m_PbrBlendSingleSided;
+  public PbrMaterialInfo m_PbrBlendDoubleSided;
+
+  /// <returns>null if not found</returns>
+  public bool TryGetBrush(Guid guid, out BrushDescriptor desc) {
+    return m_BrushManifest.BrushesByGuid.TryGetValue(guid, out desc);
+  }
 }
 
 }
