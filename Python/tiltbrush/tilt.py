@@ -286,6 +286,8 @@ def _make_ext_reader(ext_bits, ext_mask):
     except KeyError: info = ext_bits['unknown'](bit)
     infos.append(info)
 
+  print infos 
+  
   if len(infos) == 0:
     return (lambda f: [], lambda f,vs: None, {})
 
@@ -499,7 +501,7 @@ class Stroke(object):
     self.brush_color = json_map["brush_color"]
     self.brush_size = json_map["brush_size"]
     self.stroke_mask = json_map["stroke_mask"]
-    self.cp_mask =json_map["cp_mask"]
+    self.cp_mask = json_map["cp_mask"]
     #
     #
     unused_stroke_ext_reader, self.stroke_ext_writer, self.stroke_ext_lookup = _make_stroke_ext_reader(self.stroke_mask)
