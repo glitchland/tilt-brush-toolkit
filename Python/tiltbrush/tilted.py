@@ -5,7 +5,7 @@ import uuid
 import struct
 import contextlib
 from collections import defaultdict
-from io import StringIO
+from io import BytesIO
 
 __all__ = ('Sketch', 'Stroke', 'ControlPoint')
 
@@ -49,9 +49,9 @@ __all__ = ('Sketch', 'Stroke', 'ControlPoint')
 # control points array it writes 7 4-byte floats packed in little endian
 # as well as the extension data. This comprises the sketch.
   
-COOKIE = int(3312887245)
-VERSION = int(5)
-RESERVED = int(0)
+COOKIE = 3312887245
+VERSION = 5
+RESERVED = 0
 
 #
 # Format string lookup for pack/unpack, selected by a bitfield.
@@ -135,15 +135,16 @@ def _make_ext_reader(ext_bits, ext_mask):
   print(infos) 
   
   if len(infos) == 0:
+    print("[_make_ext_reader lambda] f:", f)     
     return (lambda f: [], lambda f, vs: None, {})
 
   fmt = '<' + ''.join(info[1] for info in infos)
   names = [info[0] for info in infos]
   if '@' in fmt:
     # struct.unpack isn't general enough to do the job
-    print(fmt, names, infos)
     fmts = ['<'+info[1] for info in infos]
     def reader(f, fmts=fmts):
+      print("[_make_ext_reader reader 1] f:", f, "fmt:", fmt)      
       values = [None] * len(fmts)
       for i,fmt in enumerate(fmts):
         if fmt == '<@':
@@ -153,46 +154,61 @@ def _make_ext_reader(ext_bits, ext_mask):
           values[i], = struct.unpack(fmt, f.read(4))
   else:
     def reader(f, fmt=fmt, nbytes=len(infos)*4):
+      print("[_make_ext_reader reader 2] f:", f, "fmt:", fmt, "nbytes:", nbytes)      
       values = list(struct.unpack(fmt, f.read(nbytes)))
+      print("values", values)
       return values
 
   def writer(f, values, fmt=fmt):
+    print("[_make_ext_reader writer] f:", f, "values:", values, "fmt:", fmt)
     return f.write(struct.pack(fmt, *values))
 
   lookup = dict( (name,i) for (i,name) in enumerate(names) )
+
   return reader, writer, lookup
 
 
 #
-# Utility class for rw of binary data
+# Utility class for rw of binary data. The 
+# in_file is a BytesIO object.
 ############################################
-class binfile(object):
+class BinFile(object):
   # Helper for parsing
-  def __init__(self, inf):
-    self.inf = inf
+  def __init__(self, in_file):
+    self.in_file = in_file
 
   def read(self, n):
-    return self.inf.read(n)
+    return self.in_file.read(n)
 
   def write(self, data):
-    return self.inf.write(data)
+    return self.in_file.write(data)
 
   def read_length_prefixed(self):
     n, = self.unpack("<I")
-    return self.inf.read(n)
+    return self.in_file.read(n)
 
   def write_length_prefixed(self, data):
-    self.pack("<I", len(data))
-    self.inf.write(data)
+    packed_data = struct.pack("<s", str.encode(data)) # convert string to bytes array
+    print(packed_data)
+    packed_len = struct.pack("<I", len(packed_data))
+    print(packed_len)
+    self.in_file.write(packed_len)
+    self.in_file.write(packed_data)
 
-  def unpack(self, fmt):
+  def unpack_from_file(self, fmt):
     n = struct.calcsize(fmt)
-    data = self.inf.read(n)
+    data = self.in_file.read(n)
     return struct.unpack(fmt, data)
 
-  def pack(self, fmt, *args):
+  # In python *args is just convention. This is used 
+  # when there are a variable number of expected 
+  # arguments. 
+  def pack_into_file(self, fmt, *args):
+    print("fmt", fmt)
+    print("args", *args)
     data = struct.pack(fmt, *args)
-    return self.inf.write(data)
+    print("data", data)
+    return self.in_file.write(data)
 
 
 #
@@ -219,15 +235,15 @@ class Sketch(object):
     self.strokes[index].add_control_point(pos, rot)
 
   def pack(self):
-    tmpf = StringIO()
-    packed_data = self.binwrite(binfile(tmpf))
+    tmpf = BytesIO()
+    packed_data = self.binwrite(BinFile(tmpf))
     return tmpf.getvalue()
 
   def binwrite(self, b):
-    # b is a binfile instance.
-    b.pack("<3I", *self.header)
+    # b is a BinFile instance.
+    b.pack_into_file("<3I", *self.header)
     b.write_length_prefixed(self.additional_header)
-    b.pack("<i", len(self.strokes))
+    b.pack_into_file("<i", len(self.strokes))
     for stroke in self.strokes:
       stroke._write(b) # _write on the stroke object
 
@@ -421,13 +437,14 @@ class Stroke(object):
   # The b is a binary writer, which is passed down through the Sketch 
   # into this writer.
   def _write(self, b):
-    b.pack("<i", self.brush_idx)
-    b.pack("<4f", *self.brush_color)
-    b.pack("<fII", self.brush_size, self.stroke_mask, self.cp_mask)
+    b.pack_into_file("<i", self.brush_idx)
+    b.pack_into_file("<4f", *self.brush_color)
+    b.pack_into_file("<fII", self.brush_size, self.stroke_mask, self.cp_mask)
     self.stroke_ext_writer(b, self.extension) # pass the binary writer into the extension
                                               # writer
-    b.pack("<i", len(self.controlpoints))     # little endian, signed int
-    for cp in self.controlpoints:
+    b.pack_into_file("<i", len(self._controlpoints))     # little endian, signed int
+    print(self.cp_ext_writer)
+    for cp in self._controlpoints:
       cp._write(b, self.cp_ext_writer)
 
 
@@ -453,5 +470,5 @@ class ControlPoint(object):
     p = self.position    # 3 float
     o = self.orientation # 4 floats
     # little endian, 7 4-byte floats 
-    b.pack("<7f", p[0], p[1], p[2], o[0], o[1], o[2], o[3])
-    cp_ext_writer(b, self.extension)
+    b.pack_into_file("<7f", p[0], p[1], p[2], o[0], o[1], o[2], o[3])
+    cp_ext_writer(b, [self.extension])

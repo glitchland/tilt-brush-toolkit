@@ -31,3 +31,7 @@ rot = [1.0, 1.0, 1.0, 0.0]
 my_sketch.add_control_point_to_stroke(stroke_index, pos, rot)
 
 sketch_bin_data = my_sketch.pack()
+
+sketch_file = open("sketch.data", "wb")
+sketch_file_array = bytearray(sketch_bin_data)
+sketch_file.write(sketch_file_array)
