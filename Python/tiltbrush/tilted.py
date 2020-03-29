@@ -52,6 +52,114 @@ __all__ = ('Sketch', 'Stroke', 'ControlPoint')
 COOKIE = 3312887245
 VERSION = 5
 RESERVED = 0
+DEFAULT_ENVIRONMENT = 'ab080599-e465-4a6d-8587-43bf495af68b'
+METADATA_SCHEMA_VERSION = 2
+
+BRUSH_LIST_ARRAY = [
+  ('89d104cd-d012-426b-b5b3-bbaee63ac43c','Bubbles'),
+  ('700f3aa8-9a7c-2384-8b8a-ea028905dd8c','CelVinyl_16'),
+  ('0f0ff7b2-a677-45eb-a7d6-0cd7206f4816','ChromaticWave'),
+  ('1161af82-50cf-47db-9706-0c3576d43c43','CoarseBristles'),
+  ('1caa6d7d-f015-3f54-3a4b-8b5354d39f81','Comet_16'),
+  ('c8313697-2563-47fc-832e-290f4c04b901','DiamondHull_16'),
+  ('4391aaaa-df73-4396-9e33-31e4e4930b27','Disco'),
+  ('6a1cf9f9-032c-45ec-9b1d-a6680bee30f7','Dots'),
+  ('0d3889f3-3ede-470c-8af4-f44813306126','DoubleTaperedFlat'),
+  ('0d3889f3-3ede-470c-8af4-de4813306126','DoubleTaperedMarker'),
+  ('d0262945-853c-4481-9cbd-88586bed93cb','DuctTape'),
+  ('f6e85de3-6dcc-4e7f-87fd-cee8c3d25d51','Electricity'),
+  ('02ffb866-7fb2-4d15-b761-1012cefb1360','Embers'),
+  ('cb92b597-94ca-4255-b017-0e3f42f12f9e','Fire'),
+  ('2d35bcf0-e4d8-452c-97b1-3311be063130','Flat'),
+  ('cf019139-d41c-4eb0-a1d0-5cf54b0a42f3','Highlighter'),
+  ('6a1cf9f9-032c-45ec-9b6e-a6680bee32e9','HyperGrid'),
+  ('dce872c2-7b49-4684-b59b-c45387949c5c','Hypercolor'),
+  ('2f212815-f4d3-c1a4-681a-feeaf9c6dc37','Icing_16'),
+  ('f5c336cf-5108-4b40-ade9-c687504385ab','Ink'),
+  ('4a76a27a-44d8-4bfe-9a8c-713749a499b0','Leaves'),
+  ('2241cd32-8ba2-48a5-9ee7-2caef7e9ed62','Light'),
+  ('4391aaaa-df81-4396-9e33-31e4e4930b27','LightWire'),
+  ('d381e0f5-3def-4a0d-8853-31e9200bcbda','Lofted_16'),
+  ('429ed64a-4e97-4466-84d3-145a861ef684','Marker'),
+  ('79348357-432d-4746-8e29-0e25c112e3aa','MatteHull_16'),
+  ('b2ffef01-eaaa-4ab5-aa64-95a2c4f5dbc6','NeonPulse'),
+  ('f72ec0e7-a844-4e38-82e3-140c44772699','OilPaint'),
+  ('f1114e2e-eb8d-4fde-915a-6e653b54e9f5','Paper'),
+  ('759f1ebd-20cd-4720-8d41-234e0da63716','PaperSingleSided'),
+  ('e0abbc80-0f80-e854-4970-8924a0863dcc','Petal_16'),
+  ('c33714d1-b2f9-412e-bd50-1884c9d46336','Plasma'),
+  ('ad1ad437-76e2-450d-a23a-e17f8310b960','Rainbow'),
+  ('faaa4d44-fcfb-4177-96be-753ac0421ba3','ShinyHull_16'),
+  ('70d79cca-b159-4f35-990c-f02193947fe8','Smoke'),
+  ('d902ed8b-d0d1-476c-a8de-878a79e3a34c','Snow'),
+  ('accb32f5-4509-454f-93f8-1df3fd31df1b','SoftHighlighter'),
+  ('cf7f0059-7aeb-53a4-2b67-c83d863a9ffa','Spikes_16'),
+  ('8dc4a70c-d558-4efd-a5ed-d4e860f40dc3','Splatter'),
+  ('0eb4db27-3f82-408d-b5a1-19ebd7d5b711','Stars'),
+  ('44bb800a-fbc3-4592-8426-94ecb05ddec3','Streamers'),
+  ('0077f88c-d93a-42f3-b59b-b31c50cdb414','Taffy'),
+  ('b468c1fb-f254-41ed-8ec9-57030bc5660c','TaperedFlat'),
+  ('d90c6ad8-af0f-4b54-b422-e0f92abe1b3c','TaperedMarker'),
+  ('75b32cf0-fdd6-4d89-a64b-e2a00b247b0f','ThickPaint'),
+  ('4391385a-df73-4396-9e33-31e4e4930b27','Toon'),
+  ('a8fea537-da7c-4d4b-817f-24f074725d6d','UnlitHull_16'),
+  ('d229d335-c334-495a-a801-660ac8a87360','VelvetInk'),
+  ('10201aa3-ebc2-42d8-84b7-2e63f6eeb8ab','Waveform'),
+  ('b67c0e81-ce6d-40a8-aeb0-ef036b081aa3','WetPaint_16'),
+  ('4391385a-cf83-4396-9e33-31e4e4930b27','Wire')  
+]
+
+class MetaDataFile(object):
+  # Helper for parsing
+  def __init__(self, out_file):
+    self.is_initialized = false 
+    self.out_file = out_file
+    self.metadata = {
+      "EnvironmentPreset": DEFAULT_ENVIRONMENT,
+      "ThumbnailCameraTransformInRoomSpace": [ [ 0.0, 0.0, 0.0 ], [ 0.0, 0.0, 0.0, 0.0 ], 1.0 ],
+      "SceneTransformInRoomSpace": [ [ 0.0, 0.0, 0.0 ], [ 0.0, 0.0, 0.0, 0.0 ], 1.0 ],
+      "BrushIndex": [],
+      "SchemaVersion": METADATA_SCHEMA_VERSION,
+      "ModelIndex": [],
+      "Mirror": {
+        "Transform": [ [ 0.0, 0.0, 0.0 ], [ 0.0, 0.0, 0.0, 0.0 ], 1.0 ]
+      },
+      "Videos": [],
+      "CameraPaths": []
+    }
+    self.init_brush_index_array()
+
+
+  def add_model(self, model_path):
+    if self.is_initialized == False:
+      return 
+
+    model_details = {
+      "FilePath": "", # this is relative to the tiltbrush folder
+      "PinStates": [ false ], # support changint this later
+      #support chaning this later (position, rotation)
+      "RawTransforms": [ [ [ 0.0, 0.0, 0.0 ], [ 0.0, 0.0 0.0, 0.0 ], 1.0 ]
+      ],
+      "GroupIds": [ 0 ]
+    }
+    self.metadata["ModelIndex"].append(model_details)
+
+    return
+    
+  def init_brush_index_array(self):
+    if self.is_initialized == False:
+      return 
+
+    brush_guid_list = []
+    for brush_tuple in BRUSH_LIST_ARRAY:
+      brush_guid_list.append(brush_tuple[0])
+
+    self.metadata["BrushIndex"] = brush_guid_list
+
+    return 
+    
+  def get_metadata_json(self):
+    return json.dumps(self.metadata)
 
 #
 # Format string lookup for pack/unpack, selected by a bitfield.
@@ -209,7 +317,6 @@ class BinFile(object):
     data = struct.pack(fmt, *args)
     print("data", data)
     return self.in_file.write(data)
-
 
 #
 #
