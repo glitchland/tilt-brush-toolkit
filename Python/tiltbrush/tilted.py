@@ -112,7 +112,7 @@ BRUSH_LIST_ARRAY = [
 class MetaDataFile(object):
   # Helper for parsing
   def __init__(self, out_file):
-    self.is_initialized = false 
+    self.is_initialized = False 
     self.out_file = out_file
     self.metadata = {
       "EnvironmentPreset": DEFAULT_ENVIRONMENT,
@@ -136,9 +136,9 @@ class MetaDataFile(object):
 
     model_details = {
       "FilePath": "", # this is relative to the tiltbrush folder
-      "PinStates": [ false ], # support changint this later
+      "PinStates": [ False ], # support changint this later
       #support chaning this later (position, rotation)
-      "RawTransforms": [ [ [ 0.0, 0.0, 0.0 ], [ 0.0, 0.0 0.0, 0.0 ], 1.0 ]
+      "RawTransforms": [ [ [ 0.0, 0.0, 0.0 ], [ 0.0, 0.0, 0.0, 0.0 ], 1.0 ]
       ],
       "GroupIds": [ 0 ]
     }
@@ -296,12 +296,15 @@ class BinFile(object):
     return self.in_file.read(n)
 
   def write_length_prefixed(self, data):
-    packed_data = struct.pack("<s", str.encode(data)) # convert string to bytes array
-    print(packed_data)
-    packed_len = struct.pack("<I", len(packed_data))
-    print(packed_len)
-    self.in_file.write(packed_len)
-    self.in_file.write(packed_data)
+    print("write_length_prefixed data: |", data, "|")
+    self.pack_into_file("<I", len(data))
+    self.in_file.write(data)
+    #packed_data = struct.pack("<s", str.encode(data)) # convert string to bytes array
+    #print(packed_data)
+    #packed_len = struct.pack("<I", len(packed_data))
+    #print(packed_len)
+    #self.in_file.write(packed_len)
+    #self.in_file.write(packed_data)
 
   def unpack_from_file(self, fmt):
     n = struct.calcsize(fmt)
@@ -312,10 +315,10 @@ class BinFile(object):
   # when there are a variable number of expected 
   # arguments. 
   def pack_into_file(self, fmt, *args):
-    print("fmt", fmt)
-    print("args", *args)
+    print("pack_into_file fmt", fmt)
+    print("pack_into_file args", *args)
     data = struct.pack(fmt, *args)
-    print("data", data)
+    print("pack_into_file data", data)
     return self.in_file.write(data)
 
 #
@@ -331,23 +334,25 @@ class Sketch(object):
     """source is either a file name, a file-like instance, or a Tilt instance."""
     self.filename = None
     self.header = [COOKIE, VERSION, RESERVED] # cookie, version, unused
-    self.additional_header = ""
+    self.additional_header = b'' # 0 length data
     self.strokes = []
 
   def add_stroke(self, stroke):
       if len(self.strokes) < 300000:
         self.strokes.append(stroke)
 
-  def add_control_point_to_stroke(self, index, pos, rot):
-    self.strokes[index].add_control_point(pos, rot)
+  def add_control_point_to_stroke(self, index, pos, rot, ext=[]):
+    self.strokes[index].add_control_point(pos, rot, ext)
 
   def pack(self):
     tmpf = BytesIO()
     packed_data = self.binwrite(BinFile(tmpf))
+    print("pack:" , packed_data)
     return tmpf.getvalue()
 
   def binwrite(self, b):
     # b is a BinFile instance.
+    print("binwrite: ", *self.header)
     b.pack_into_file("<3I", *self.header)
     b.write_length_prefixed(self.additional_header)
     b.pack_into_file("<i", len(self.strokes))
@@ -395,14 +400,14 @@ class Stroke(object):
   #
   # The only stroke extension that appears to be supported is 
   # 'scale'.
-  def __init__(self, brush, color, size, stroke_mask, cp_mask):
+  def __init__(self, brush, color, size, stroke_mask, cp_mask, stroke_extension=[]):
     self.brush_idx = brush  
     self.brush_color = color
     self.brush_size = size
     self._controlpoints = []
     self.stroke_mask = stroke_mask
     self.cp_mask = cp_mask
-    self.extension = [0] ## This might need to be changed
+    self.extension = stroke_extension
 
     _, self.stroke_ext_writer, self.stroke_ext_lookup = _make_stroke_ext_reader(self.stroke_mask)
     _, self.cp_ext_writer, self.cp_ext_lookup = _make_cp_ext_reader(self.cp_mask)
@@ -449,9 +454,9 @@ class Stroke(object):
 
   # 
   # Add a control point
-  def add_control_point(self, pos, rot):
+  def add_control_point(self, pos, rot, extensions = []):
     if len(self._controlpoints) < 10000:
-      ctrl_pt = ControlPoint(pos, rot, self.cp_mask)
+      ctrl_pt = ControlPoint(pos, rot, extensions)
       print(ctrl_pt)
       self._controlpoints.append(ctrl_pt)
 
@@ -557,19 +562,19 @@ class Stroke(object):
 
 #
 #
-#
+# 
 #
 class ControlPoint(object):
   """Data for a single control point from a stroke. Attributes:
     .position    Position as 3 floats. Units are decimeters.
     .orientation Orientation of controller as a quaternion (x, y, z, w)."""
 
-  def __init__(self, pos, rot, ext):
+  def __init__(self, pos, rot, ext=[]):
     """Create a ControlPoint from pos (array of 3 floats), rot 
     (array of 4 floats) and extension (CONTROLPOINT_EXTENSION_BITS)"""
     self.position = pos    # 3 floats
     self.orientation = rot # 4 floats
-    self.extension = ext   # 
+    self.extension = ext   # array of extension settings
     
   # the b is a binary writer which is passed down from the 
   # Stroke write method
@@ -578,4 +583,4 @@ class ControlPoint(object):
     o = self.orientation # 4 floats
     # little endian, 7 4-byte floats 
     b.pack_into_file("<7f", p[0], p[1], p[2], o[0], o[1], o[2], o[3])
-    cp_ext_writer(b, [self.extension])
+    cp_ext_writer(b, self.extension)
