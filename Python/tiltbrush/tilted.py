@@ -7,7 +7,7 @@ import contextlib
 from collections import defaultdict
 from io import BytesIO
 
-__all__ = ('Sketch', 'Stroke', 'ControlPoint')
+__all__ = ('Sketch', 'Stroke', 'ControlPoint', 'MetaDataFile')
 
 #
 # UTILITY METHODS
@@ -127,9 +127,10 @@ class MetaDataFile(object):
       "Videos": [],
       "CameraPaths": []
     }
-    self.init_brush_index_array()
-
-
+    for brush_tuple in BRUSH_LIST_ARRAY:
+      print(brush_tuple)
+      self.metadata["BrushIndex"].append(brush_tuple[0])
+    
   def add_model(self, model_path):
     if self.is_initialized == False:
       return 
@@ -146,20 +147,8 @@ class MetaDataFile(object):
 
     return
     
-  def init_brush_index_array(self):
-    if self.is_initialized == False:
-      return 
-
-    brush_guid_list = []
-    for brush_tuple in BRUSH_LIST_ARRAY:
-      brush_guid_list.append(brush_tuple[0])
-
-    self.metadata["BrushIndex"] = brush_guid_list
-
-    return 
-    
   def get_metadata_json(self):
-    return json.dumps(self.metadata)
+    return json.dumps(self.metadata, indent=4, sort_keys=True)
 
 #
 # Format string lookup for pack/unpack, selected by a bitfield.
