@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 
 # Copyright 2016 Google Inc. All Rights Reserved.
 # 
@@ -55,6 +55,8 @@ def dump_sketch(sketch):
   cooky, version, unused = sketch.header[0:3]
   print 'Cooky:0x%08x  Version:%s  Unused:%s  Extra:(%d bytes)' % (
     cooky, version, unused, len(sketch.additional_header))
+  
+  print ("additional header: ", sketch.additional_header)
 
   # Create dicts that are the union of all the stroke-extension and
   # control-point-extension # lookup tables.

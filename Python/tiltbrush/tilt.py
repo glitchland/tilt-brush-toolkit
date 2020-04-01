@@ -21,7 +21,7 @@ import uuid
 import struct
 import contextlib
 from collections import defaultdict
-from io import StringIO
+from io import BytesIO
 
 __all__ = ('Tilt', 'Sketch', 'Stroke', 'ControlPoint',
            'BadTilt', 'BadMetadata', 'MissingKey')
@@ -36,6 +36,7 @@ STROKE_EXTENSION_BITS = {
   'unknown': lambda bit: ('stroke_ext_%d' % math.log(bit, 2),
                           'I' if (bit & 0xffff) else '@')
 }
+
 STROKE_EXTENSION_BY_NAME = dict(
   (info[0], (bit, info[1]))
   for (bit, info) in STROKE_EXTENSION_BITS.items()
@@ -283,6 +284,9 @@ def _make_ext_reader(ext_bits, ext_mask):
   - function writer(file, values)
   - dict mapping extension_name -> extension_index
   """
+  print("ext_bits:", ext_bits)
+  print("ext_mask:", ext_mask)
+
   infos = []
   while ext_mask:
     bit = ext_mask & ~(ext_mask-1)
@@ -319,6 +323,8 @@ def _make_ext_reader(ext_bits, ext_mask):
     return f.write(struct.pack(fmt, *values))
 
   lookup = dict( (name,i) for (i,name) in enumerate(names) )
+
+  print(reader, writer, lookup)
   return reader, writer, lookup
 
 def _make_stroke_ext_reader(ext_mask, memo={}):
@@ -534,7 +540,7 @@ class Stroke(object):
   @memoized_property
   def controlpoints(self):
     (cp_ext_reader, num_cp, raw_data) = self.__dict__.pop('_controlpoints')
-    b = binfile(StringIO(raw_data))
+    b = binfile(BytesIO(raw_data))
     return [ControlPoint.from_file(b, cp_ext_reader) for i in xrange(num_cp)]
 
   def has_stroke_extension(self, name):
@@ -641,6 +647,15 @@ class ControlPoint(object):
     inst.extension = cp_ext_reader(b)
     return inst
 
+  def from_datapt(pos, rot, ext):
+    """Create a ControlPoint from pos (array of 3 floats), rot 
+    (array of 4 floats) and extension (CONTROLPOINT_EXTENSION_BITS)"""
+    inst = self
+    inst.position = pos 
+    inst.orientation = rot 
+    inst.extension = ext
+    return inst
+    
   def clone(self):
     inst = self.__class__()
     for attr in ('position', 'orientation', 'extension'):

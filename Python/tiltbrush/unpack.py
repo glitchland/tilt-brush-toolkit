@@ -163,7 +163,7 @@ def convert_dir_to_zip(in_name, compress):
           zf.write(fullf, arcname, compression)
 
     if header_bytes is None:
-      print "Missing header; using default"
+      print("Missing header; using default")
       header_bytes = struct.pack(HEADER_V1_FMT, 'tilT', struct.calcsize(HEADER_V1_FMT), 1, 0, 0)
 
     if not _read_and_check_header(StringIO(header_bytes)):
