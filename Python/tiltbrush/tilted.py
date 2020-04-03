@@ -6,8 +6,9 @@ import struct
 import contextlib
 from collections import defaultdict
 from io import BytesIO
+import zlib
 
-__all__ = ('Sketch', 'Stroke', 'ControlPoint', 'MetaDataFile')
+__all__ = ('Sketch', 'Stroke', 'ControlPoint')
 
 #
 # UTILITY METHODS
@@ -108,6 +109,95 @@ BRUSH_LIST_ARRAY = [
   ('b67c0e81-ce6d-40a8-aeb0-ef036b081aa3','WetPaint_16'),
   ('4391385a-cf83-4396-9e33-31e4e4930b27','Wire')  
 ]
+
+TILT_MAGIC_SENTINEL = 0x74696c54 #'tilT'
+TILT_HEADER_SIZE = 16 
+TILT_HEADER_VERSION = 1 
+TILT_RESERVED_1 = 0
+TILT_RESERVED_2 = 0
+
+class TiltHeader(object):
+  """
+    uint32 sentinel ('tilT')
+    uint16 header_size (currently 16)
+    uint16 header_version (currently 1)
+    uint32 reserved
+    uint32 reserved
+  """
+  def __init__(self):
+    tmp = struct.pack(">I", TILT_MAGIC_SENTINEL)
+    tmp += struct.pack("HHII", TILT_HEADER_SIZE, 
+    TILT_HEADER_VERSION, TILT_RESERVED_1, TILT_RESERVED_2)
+    self.data  = tmp
+
+  def getData(self):
+    return self.data
+
+class TiltThumbnailPNG(object):
+
+  def __init__(self, height = None, width = None):
+    self.png = None 
+    self.height = height 
+    self.width = width
+
+  def makeRGBPNG(self, R=[], G=[], B=[]):
+    #_makePNG([[0,255,0],[255,255,255],[0,255,0]])
+    if len(R) == 0:
+      R = [0,0,0]
+    if len(G) == 0:
+      G = [0,0,0]
+    if len(B) == 0:
+      B = [0,0,0]
+
+    return self.makePNG([R,G,B])
+
+  def makePNG(self, data):
+      def I1(value):
+          return struct.pack("!B", value & (2**8-1))
+      def I4(value):
+          return struct.pack("!I", value & (2**32-1))
+      # compute width&height from data if not explicit
+      if self.height is None:
+          self.height = len(data) # rows
+      if self.width is None:
+          self.width = 0
+          for row in data:
+              if self.width < len(row):
+                  self.width = len(row) # get the widest part
+      # generate these chunks depending on image type
+      makeIHDR = True
+      makeIDAT = True
+      makeIEND = True
+      png = b"\x89" + "PNG\r\n\x1A\n".encode('ascii')
+      if makeIHDR:
+          colortype = 0 # true gray image (no palette)
+          bitdepth = 8 # with one byte per pixel (0..255)
+          compression = 0 # zlib (no choice here)
+          filtertype = 0 # adaptive (each scanline seperately)
+          interlaced = 0 # no
+          IHDR = I4(self.width) + I4(self.height) + I1(bitdepth)
+          IHDR += I1(colortype) + I1(compression)
+          IHDR += I1(filtertype) + I1(interlaced)
+          block = "IHDR".encode('ascii') + IHDR
+          png += I4(len(IHDR)) + block + I4(zlib.crc32(block))
+      if makeIDAT:
+          raw = b""
+          for y in range(self.height):
+              raw += b"\0" # no filter for this scanline
+              for x in range(self.width):
+                  c = b"\0" # default black pixel
+                  if y < len(data) and x < len(data[y]):
+                      c = I1(data[y][x])
+                  raw += c
+          compressor = zlib.compressobj()
+          compressed = compressor.compress(raw)
+          compressed += compressor.flush() #!!
+          block = "IDAT".encode('ascii') + compressed
+          png += I4(len(compressed)) + block + I4(zlib.crc32(block))
+      if makeIEND:
+          block = "IEND".encode('ascii')
+          png += I4(0) + block + I4(zlib.crc32(block))
+      return png
 
 class MetaDataFile(object):
   # Helper for parsing
