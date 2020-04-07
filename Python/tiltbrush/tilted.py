@@ -3,9 +3,13 @@ import math
 import json
 import uuid
 import struct
+import shutil
+import sys
+import tempfile
 import contextlib
 from collections import defaultdict
 from io import BytesIO
+import zipfile
 import zlib
 
 __all__ = ('Sketch', 'Stroke', 'ControlPoint')
@@ -116,6 +120,15 @@ TILT_HEADER_VERSION = 1
 TILT_RESERVED_1 = 0
 TILT_RESERVED_2 = 0
 
+STANDARD_FILE_ORDER = [
+  'header.bin',
+  'thumbnail.png',
+  'metadata.json',
+  'main.json',
+  'data.sketch'
+]
+STANDARD_FILE_ORDER = dict( (n,i) for (i,n) in enumerate(STANDARD_FILE_ORDER) )
+
 class TiltHeader(object):
   """
     uint32 sentinel ('tilT')
@@ -199,11 +212,116 @@ class TiltThumbnailPNG(object):
           png += I4(0) + block + I4(zlib.crc32(block))
       return png
 
+class ConversionError(Exception):
+  """An error occurred in the zip <-> directory conversion process"""
+  pass
+
+class TiltArchive(object):
+  def __init__(self):
+    self.dirpath = tempfile.mkdtemp(suffix='.tilt', prefix='Untitled-')
+
+  def write_header(self, hdr_data):
+    with open(self.dirpath+"/header.bin","wb") as f:
+      f.write(hdr_data)
+
+  def write_sketch(self, sketch_data):
+    with open(self.dirpath+"/data.sketch","wb") as f:
+      f.write(sketch_data)
+
+  def write_metadata(self, meta_data):
+    with open(self.dirpath+"/metadata.json","w") as f:
+      f.write(meta_data)
+
+  def write_thumbnail(self, png_data):
+    with open(self.dirpath+"/thumbnail.png","wb") as f:
+      f.write(png_data)
+
+  def finalize(self):
+    self.convert_dir_to_zip(self.dirpath, True)
+    self.cleanup(self.dirpath)
+
+  def convert_dir_to_zip(self, in_name, compress):
+    in_name = os.path.normpath(in_name)  # remove trailing '/' if any
+    out_name = in_name + '.part'
+    if os.path.exists(out_name):
+      raise ConversionError("Remove %s first" % out_name)
+  
+    def by_standard_order(filename):
+      lfile = filename.lower()
+      try:
+        idx = STANDARD_FILE_ORDER[lfile]
+      except KeyError:
+        raise ConversionError("Unknown file %s; this is probably not a .tilt" % filename)
+      return (idx, lfile)
+
+    # Make sure metadata.json looks like valid utf-8 (rather than latin-1
+    # or something else that will cause mojibake)
+    try:
+      with open(os.path.join(in_name, 'metadata.json'), 'r') as inf:
+        #jsondata = inf.read() 
+        import json
+        json.load(inf)
+    except IOError as e:
+      raise ConversionError("Cannot validate metadata.json: %s" % e)
+    except UnicodeDecodeError as e:
+      raise ConversionError("metadata.json is not valid utf-8: %s" % e)
+    except ValueError as e:
+      raise ConversionError("metadata.json is not valid json: %s" % e)
+
+    compression = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
+    try:
+      header_bytes = None
+
+      zipf = BytesIO()
+      with zipfile.ZipFile(zipf, 'a', compression, False) as zf:
+        for (r, ds, fs) in os.walk(in_name):
+          fs.sort(key=by_standard_order)
+          for f in fs:
+            fullf = os.path.join(r, f)
+            if f == 'header.bin':
+              with open(fullf, 'rb') as hdrfile:
+                header_bytes = hdrfile.read()
+              continue
+            arcname = fullf[len(in_name)+1:]
+            zf.write(fullf, arcname, compression)
+
+      with open(out_name, 'wb') as outf:
+        outf.write(header_bytes)
+        outf.write(zipf.getvalue())
+
+      tmp = in_name + '._prev'
+      os.rename(in_name, tmp)
+      os.rename(out_name, in_name)
+      self._destroy(tmp)
+
+    finally:
+      self._destroy(out_name)
+
+  def cleanup(self, dirpath):
+    print(dirpath)
+    #shutil.rmtree(dirpath)
+
+  def _destroy(self, file_or_dir):
+    import stat
+    if os.path.isfile(file_or_dir):
+      os.chmod(file_or_dir, stat.S_IWRITE)
+      os.unlink(file_or_dir)
+    elif os.path.isdir(file_or_dir):
+      import shutil, stat
+      for r,ds,fs in os.walk(file_or_dir, topdown=False):
+        for f in fs:
+          os.chmod(os.path.join(r, f), stat.S_IWRITE)
+          os.unlink(os.path.join(r, f))
+        for d in ds:
+          os.rmdir(os.path.join(r, d))
+      os.rmdir(file_or_dir)
+    if os.path.exists(file_or_dir):
+      raise Exception("'%s' is not empty" % file_or_dir)
+
 class MetaDataFile(object):
   # Helper for parsing
-  def __init__(self, out_file):
+  def __init__(self):
     self.is_initialized = False 
-    self.out_file = out_file
     self.metadata = {
       "EnvironmentPreset": DEFAULT_ENVIRONMENT,
       "ThumbnailCameraTransformInRoomSpace": [ [ 0.0, 0.0, 0.0 ], [ 0.0, 0.0, 0.0, 0.0 ], 1.0 ],
