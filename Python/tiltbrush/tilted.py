@@ -558,6 +558,7 @@ class Sketch(object):
         self.strokes.append(stroke)
 
   def add_control_point_to_stroke(self, index, pos, rot, ext=[]):
+    print("adding point to stroke at index: ", index)
     self.strokes[index].add_control_point(pos, rot, ext)
 
   def pack(self):
@@ -668,13 +669,23 @@ class Stroke(object):
         raise AttributeError("%s (extension attribute)" % name)
     raise AttributeError(name)
 
-  # 
-  # Add a control point
+  
   def add_control_point(self, pos, rot, extensions = []):
+    self.create_and_add_control_point(pos, rot, extensions)
+
+  # 
+  # Add a control point from properties
+  def create_and_add_control_point(self, pos, rot, extensions = []):
     if len(self._controlpoints) < 10000:
       ctrl_pt = ControlPoint(pos, rot, extensions)
       print(ctrl_pt)
       self._controlpoints.append(ctrl_pt)
+
+  # 
+  # Add a control point
+  def add_control_point_from_object(self, control_point):
+    if len(self._controlpoints) < 10000:
+      self._controlpoints.append(control_point)
 
   #
   # Return the list of control points
